@@ -1,0 +1,264 @@
+package com.wdtt.client
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.VpnService
+import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.os.StrictMode
+import android.provider.Settings
+import android.util.Log
+import androidx.annotation.RequiresApi
+import androidx.core.app.NotificationCompat
+import go.Seq
+import libv2ray.CoreCallbackHandler
+import libv2ray.CoreController
+import libv2ray.Libv2ray
+import java.lang.ref.SoftReference
+import java.util.concurrent.atomic.AtomicBoolean
+
+class XrayVpnService : VpnService() {
+
+    companion object {
+        private const val TAG = "XrayVpnService"
+        private const val NOTIF_CHANNEL = "bypassme_xray_vpn"
+        private const val NOTIF_ID = 1002
+
+        const val ACTION_START = "START_XRAY"
+        const val ACTION_STOP  = "STOP_XRAY"
+        const val EXTRA_CONFIG = "xray_config_json"
+
+        // Broadcasts для связи с главным процессом (сервис в :xray_daemon процессе)
+        const val BROADCAST_RUNNING = "com.bypassme.VPN_RUNNING"
+        const val BROADCAST_STOPPED = "com.bypassme.VPN_STOPPED"
+        const val BROADCAST_ERROR   = "com.bypassme.VPN_ERROR"
+        const val EXTRA_ERROR_MSG   = "error_msg"
+        private const val PKG       = "com.bypassme.app"
+
+        fun start(context: Context, configJson: String) {
+            context.startForegroundService(
+                Intent(context, XrayVpnService::class.java).apply {
+                    action = ACTION_START
+                    putExtra(EXTRA_CONFIG, configJson)
+                }
+            )
+        }
+
+        fun stop(context: Context) {
+            context.startService(
+                Intent(context, XrayVpnService::class.java).apply { action = ACTION_STOP }
+            )
+        }
+
+        // Инициализация libv2ray — один раз (AtomicBoolean как в CoreNativeManager v2rayNG)
+        private val coreInitialized = AtomicBoolean(false)
+
+        private fun initCoreEnv(context: Context) {
+            if (coreInitialized.compareAndSet(false, true)) {
+                try {
+                    Seq.setContext(context.applicationContext)
+                    val rawId = try {
+                        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                    } catch (_: Exception) { "" }
+                    // xray XUDP BaseKey должен быть ровно 32 байта — padEnd до 32 символов
+                    val deviceId = rawId.padEnd(32, '0').substring(0, 32)
+                    Libv2ray.initCoreEnv(context.filesDir.absolutePath, deviceId)
+                    Log.i(TAG, "libv2ray initialized")
+                } catch (e: Exception) {
+                    Log.e(TAG, "initCoreEnv failed: ${e.message}", e)
+                    coreInitialized.set(false)
+                    throw e
+                }
+            }
+        }
+    }
+
+    private lateinit var vpnInterface: ParcelFileDescriptor
+    private var isRunning = false
+    private var coreController: CoreController? = null
+
+    private val coreCallback = object : CoreCallbackHandler {
+        override fun startup(): Long = 0
+        override fun shutdown(): Long {
+            sendBroadcast(Intent(BROADCAST_STOPPED).setPackage(PKG))
+            return 0
+        }
+        override fun onEmitStatus(l: Long, s: String?): Long = 0
+    }
+
+    @delegate:RequiresApi(Build.VERSION_CODES.P)
+    private val defaultNetworkRequest by lazy {
+        NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            .build()
+    }
+
+    private val connectivity by lazy { getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager }
+
+    @delegate:RequiresApi(Build.VERSION_CODES.P)
+    private val defaultNetworkCallback by lazy {
+        object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { setUnderlyingNetworks(arrayOf(network)) }
+            override fun onCapabilitiesChanged(network: Network, nc: NetworkCapabilities) { setUnderlyingNetworks(arrayOf(network)) }
+            override fun onLost(network: Network) { setUnderlyingNetworks(null) }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().permitAll().build())
+        Log.i(TAG, "service created")
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return when (intent?.action) {
+            ACTION_START -> {
+                val config = intent.getStringExtra(EXTRA_CONFIG) ?: return START_NOT_STICKY
+                showNotification()
+                if (isRunning) stopCore()
+                setupAndStart(config)
+                START_STICKY
+            }
+            ACTION_STOP -> {
+                stopAll()
+                START_NOT_STICKY
+            }
+            else -> START_NOT_STICKY
+        }
+    }
+
+    private fun setupAndStart(configJson: String) {
+        val prepare = prepare(this)
+        if (prepare != null) { stopSelf(); return }
+
+        if (!configureVpn()) { stopSelf(); return }
+
+        // Прямой TUN режим: передаём реальный tunFd в xray
+        // xray читает пакеты из TUN интерфейса напрямую (без hev-socks5-tunnel)
+        startXrayCore(configJson)
+    }
+
+    private fun configureVpn(): Boolean {
+        return try {
+            val builder = Builder()
+            builder.setMtu(1500)
+            builder.addAddress("10.10.0.1", 30)
+            builder.addRoute("0.0.0.0", 0)
+            builder.addDnsServer("1.1.1.1")
+            builder.addDnsServer("8.8.8.8")
+            try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+            builder.setSession("ByPassMe VPN")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                try { connectivity.requestNetwork(defaultNetworkRequest, defaultNetworkCallback) }
+                catch (_: Exception) {}
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.setMetered(false)
+            }
+
+            vpnInterface = builder.establish()!!
+            isRunning = true
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "configureVpn failed: ${e.message}", e)
+            false
+        }
+    }
+
+    private fun startXrayCore(configJson: String) {
+        try {
+            initCoreEnv(this)
+
+            // Защита сокетов от VPN петли
+            Libv2ray.useProtector(object : libv2ray.V2RayProtector {
+                override fun protect(fd: Long): Boolean =
+                    this@XrayVpnService.protect(fd.toInt())
+            })
+
+            val ctrl = Libv2ray.newCoreController(coreCallback)
+            coreController = ctrl
+            ctrl.startLoop(configJson, vpnInterface.fd)
+            if (ctrl.isRunning) {
+                sendBroadcast(Intent(BROADCAST_RUNNING).setPackage(PKG))
+                Log.i(TAG, "xray started ok")
+            } else {
+                val msg = "xray не запустился после startLoop"
+                Log.e(TAG, msg)
+                sendBroadcast(Intent(BROADCAST_ERROR).setPackage(PKG).putExtra(EXTRA_ERROR_MSG, msg))
+                stopAll()
+            }
+        } catch (e: Exception) {
+            val msg = "xray ошибка: ${e.message}"
+            Log.e(TAG, msg, e)
+            sendBroadcast(Intent(BROADCAST_ERROR).setPackage(PKG).putExtra(EXTRA_ERROR_MSG, msg))
+            stopAll()
+        }
+    }
+
+    private fun stopCore() {
+        try { coreController?.let { if (it.isRunning) it.stopLoop() } } catch (_: Exception) {}
+        coreController = null
+    }
+
+    private fun stopAll() {
+        isRunning = false
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try { connectivity.unregisterNetworkCallback(defaultNetworkCallback) } catch (_: Exception) {}
+        }
+
+        stopCore()
+        sendBroadcast(Intent(BROADCAST_STOPPED).setPackage(PKG))
+
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+
+        try { Thread.sleep(100) } catch (_: InterruptedException) {}
+
+        if (::vpnInterface.isInitialized) {
+            try { vpnInterface.close() } catch (_: Exception) {}
+        }
+    }
+
+    // 2 параметра — точно как v2rayNG NotificationManager.showNotification()
+    private fun showNotification() {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            nm.createNotificationChannel(
+                NotificationChannel(NOTIF_CHANNEL, "ByPassMe VPN", NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+        val stopIntent = PendingIntent.getService(
+            this, 0,
+            Intent(this, XrayVpnService::class.java).apply { action = ACTION_STOP },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        startForeground(
+            NOTIF_ID,
+            NotificationCompat.Builder(this, NOTIF_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                .setContentTitle("ByPassMe VPN")
+                .setContentText("VPN подключён")
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .addAction(0, "Отключить", stopIntent)
+                .build()
+        )
+    }
+
+    override fun onRevoke() = stopAll()
+
+    override fun onDestroy() {
+        if (isRunning) stopAll()
+        super.onDestroy()
+    }
+}
