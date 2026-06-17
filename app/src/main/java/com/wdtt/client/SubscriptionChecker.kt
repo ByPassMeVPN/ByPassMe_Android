@@ -120,13 +120,17 @@ object SubscriptionChecker {
                 System.currentTimeMillis() + daysL * 86_400_000L
             else 0L
 
-            SettingsStore(context).saveVpnCredentialsFull(
+            val store = SettingsStore(context)
+            store.saveVpnCredentialsFull(
                 uuid     = uuid,
                 url      = url,
                 status   = newStatus,
                 daysLeft = daysL,
                 expireAt = expireAt
             )
+            if (wdttPass.isNotEmpty()) {
+                store.saveConnectionPassword(wdttPass)
+            }
 
             status.value   = newStatus
             daysLeft.value = daysL

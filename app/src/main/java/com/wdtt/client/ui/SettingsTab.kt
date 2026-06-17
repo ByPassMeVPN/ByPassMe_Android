@@ -151,7 +151,8 @@ fun BypassTabContent(
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
     val currentWorkers = workersInput.coerceIn(WORKERS_PER_GROUP.toFloat(), dynamicMaxWorkers)
-    val connectionPassword = "ByPassMe"
+    val storedConnectionPassword by settingsStore.connectionPassword.collectAsStateWithLifecycle(initialValue = "")
+    val connectionPassword = storedConnectionPassword.ifEmpty { "ByPassMe" }
     val isValid = isVkLinkValid
 
     var saveJob by remember { mutableStateOf<Job?>(null) }
@@ -178,6 +179,7 @@ fun BypassTabContent(
         saveJob?.cancel()
         scope.launch {
             settingsStore.save(peer, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
+            settingsStore.saveConnectionPassword(connectionPassword)
             settingsStore.saveCaptchaMode("rjs")
             settingsStore.saveCaptchaSolveMethod("auto")
         }

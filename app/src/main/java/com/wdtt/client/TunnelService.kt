@@ -62,6 +62,13 @@ class TunnelService : Service() {
                 val notification = createNotification("Запуск...")
                 startPersistentForeground(notification)
 
+                val connectionPassword = intent.getStringExtra("connection_password") ?: ""
+                if (connectionPassword.isNotEmpty()) {
+                    TunnelManager.scope.launch {
+                        SettingsStore(applicationContext).saveConnectionPassword(connectionPassword)
+                    }
+                }
+
                 val params = TunnelParams(
                     peer = intent.getStringExtra("peer") ?: "",
                     vkHashes = intent.getStringExtra("vk_hashes") ?: "",
@@ -69,7 +76,7 @@ class TunnelService : Service() {
                     workersPerHash = intent.getIntExtra("workers_per_hash", 16),
                     port = intent.getIntExtra("port", 9000),
                     sni = intent.getStringExtra("sni") ?: "",
-                    connectionPassword = intent.getStringExtra("connection_password") ?: "",
+                    connectionPassword = connectionPassword,
                     protocol = intent.getStringExtra("protocol") ?: "udp",
                     captchaMode = sanitizeCaptchaMode(intent.getStringExtra("captcha_mode")),
                     captchaSolveMethod = intent.getStringExtra("captcha_solve_method") ?: "auto"
