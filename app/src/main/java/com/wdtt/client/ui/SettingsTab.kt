@@ -129,6 +129,27 @@ fun BypassTabContent(
             settingsStore.saveBypassServerIndex(0)
         }
     }
+
+    LaunchedEffect(initialized, savedUuid) {
+        if (!initialized || savedUuid.isBlank() || bypassServers.isNotEmpty() || isRefreshing) return@LaunchedEffect
+        isRefreshing = true
+        BypassServerManager.fetchServers(context)
+        isRefreshing = false
+    }
+
+    fun toastForFetch(result: BypassServerManager.FetchResult) {
+        val msg = when (result) {
+            BypassServerManager.FetchResult.Success -> "Список серверов обновлён"
+            BypassServerManager.FetchResult.NoAccess ->
+                "Нет доступа к обходу · проверьте подписку"
+            BypassServerManager.FetchResult.NotFound ->
+                "Подписка не найдена"
+            BypassServerManager.FetchResult.NoSubscription ->
+                "Сначала введите ссылку подписки"
+            else -> "Не удалось загрузить · используется кэш"
+        }
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
     val currentWorkers = workersInput.coerceIn(WORKERS_PER_GROUP.toFloat(), dynamicMaxWorkers)
     val connectionPassword = "ByPassMe"
     val isValid = isVkLinkValid
@@ -204,9 +225,9 @@ fun BypassTabContent(
                 showSubDialog = false
                 scope.launch {
                     isRefreshing = true
-                    val ok = BypassServerManager.fetchServers(context)
+                    val result = BypassServerManager.fetchServers(context)
                     isRefreshing = false
-                    if (ok) Toast.makeText(context, "Список серверов обновлён", Toast.LENGTH_SHORT).show()
+                    toastForFetch(result)
                 }
             },
             onDeviceLimitExceeded = { showSubDialog = false; showDeviceLimit = true },
@@ -253,14 +274,9 @@ fun BypassTabContent(
                     onClick = {
                         scope.launch {
                             isRefreshing = true
-                            val ok = BypassServerManager.fetchServers(context)
+                            val result = BypassServerManager.fetchServers(context)
                             isRefreshing = false
-                            Toast.makeText(
-                                context,
-                                if (ok) "Список серверов обновлён"
-                                else "Нет связи · используется кэш",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            toastForFetch(result)
                         }
                     },
                     enabled = !isRefreshing
@@ -303,8 +319,11 @@ fun BypassTabContent(
                 )
                 if (bypassServers.isEmpty()) {
                     Text(
-                        if (isRefreshing) "Загрузка серверов…"
-                        else "Нет серверов в кэше · нажмите ↻ при появлении интернета",
+                        when {
+                            isRefreshing -> "Загрузка серверов…"
+                            savedUuid.isBlank() -> "Сначала введите ссылку подписки (🔑)"
+                            else -> "Список пуст · нажмите ↻ для загрузки"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)

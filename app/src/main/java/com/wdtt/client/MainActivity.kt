@@ -134,6 +134,15 @@ class MainActivity : ComponentActivity() {
                 BypassServerManager.refreshInBackground(appContext, scope)
             }
 
+            // После ввода подписки — автоматически загружаем список серверов
+            LaunchedEffect(savedUuid) {
+                if (savedUuid.isBlank()) return@LaunchedEffect
+                BypassServerManager.loadCached(appContext)
+                if (BypassServerManager.servers.value.isEmpty()) {
+                    BypassServerManager.fetchServers(appContext)
+                }
+            }
+
             // Автоотзыв: если device_blocked → рефреш очистит uuid автоматически
             // Следим за статусом и если истекла → очищаем
             val subStatus by SubscriptionChecker.status.collectAsStateWithLifecycle()
@@ -346,6 +355,7 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
                         when (val result = SubscriptionChecker.fetch(context, inputText.trim())) {
                             is SubscriptionChecker.Result.Success -> {
                                 BypassServerManager.fetchServers(context)
+                                isLoading = false
                             }
                             is SubscriptionChecker.Result.DeviceLimitExceeded -> {
                                 isLoading = false
