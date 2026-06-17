@@ -63,6 +63,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.first
 import com.wdtt.client.XrayManager
+import com.wdtt.client.BypassServerManager
 import com.wdtt.client.ui.AppLogsTab
 import com.wdtt.client.ui.FloatingToolbar
 import com.wdtt.client.ui.SettingsTab
@@ -120,13 +121,17 @@ class MainActivity : ComponentActivity() {
             val appContext = this
 
             val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
+            val bypassCacheJson by settingsStore.bypassServersJson.collectAsStateWithLifecycle(initialValue = "")
+            val bypassServers by BypassServerManager.servers.collectAsStateWithLifecycle()
 
             // Загружаем кеш и запускаем фоновую проверку при старте
             LaunchedEffect(Unit) {
                 XrayManager.registerReceiver(appContext)
                 SubscriptionChecker.loadCached(appContext)
                 XrayManager.loadCached(appContext)
+                BypassServerManager.loadCached(appContext)
                 SubscriptionChecker.refreshInBackground(appContext, scope)
+                BypassServerManager.refreshInBackground(appContext, scope)
             }
 
             // Автоотзыв: если device_blocked → рефреш очистит uuid автоматически
@@ -153,7 +158,8 @@ class MainActivity : ComponentActivity() {
             }
 
             WDTTTheme(themeMode = themeMode, dynamicColor = isDynamicColor, themePalette = themePalette) {
-                if (savedUuid.isBlank()) {
+                val hasBypassCache = bypassCacheJson.isNotEmpty() || bypassServers.isNotEmpty()
+                if (savedUuid.isBlank() && !hasBypassCache) {
                     OnboardingScreen(settingsStore = settingsStore, context = appContext)
                 } else {
                     MainScreen(
@@ -232,6 +238,10 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
         val reason = settingsStore.vpnRevokeReason.first()
         displayReason = reason
         if (reason.isNotEmpty()) settingsStore.clearRevokeReason()
+        if (inputText.isEmpty()) {
+            val savedUrl = settingsStore.vpnSubscriptionUrl.first()
+            if (savedUrl.isNotEmpty()) inputText = savedUrl
+        }
     }
 
     if (showDeviceLimitDialog) {
@@ -335,7 +345,7 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
                     scope.launch {
                         when (val result = SubscriptionChecker.fetch(context, inputText.trim())) {
                             is SubscriptionChecker.Result.Success -> {
-                                // UUID уже сохранён в SubscriptionChecker.fetch → MainScreen откроется
+                                BypassServerManager.fetchServers(context)
                             }
                             is SubscriptionChecker.Result.DeviceLimitExceeded -> {
                                 isLoading = false

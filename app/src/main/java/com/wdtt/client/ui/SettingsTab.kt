@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -50,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wdtt.client.BypassServerManager
 import com.wdtt.client.SettingsStore
 import com.wdtt.client.TunnelManager
 import com.wdtt.client.TunnelService
@@ -60,9 +62,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private const val WORKERS_PER_GROUP = 12
-
-private val BYPASS_SERVER_HOSTS = listOf("144.31.54.213", "94.156.115.29")
-private val BYPASS_SERVER_NAMES = listOf("🇳🇱 Нидерланды", "🇩🇪 Германия")
+private const val SERVER_LIST_MAX_HEIGHT = 200
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,7 +92,9 @@ fun BypassTabContent(
     val subStatus by com.wdtt.client.SubscriptionChecker.status.collectAsStateWithLifecycle()
     val subDaysLeft by com.wdtt.client.SubscriptionChecker.daysLeft.collectAsStateWithLifecycle()
     val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
+    val bypassServers by BypassServerManager.servers.collectAsStateWithLifecycle()
 
+    var isRefreshing by remember { mutableStateOf(false) }
     var wasRunning by remember { mutableStateOf(false) }
     LaunchedEffect(tunnelRunning) {
         if (wasRunning && !tunnelRunning) TunnelManager.startCooldown(5)
@@ -117,9 +119,16 @@ fun BypassTabContent(
         val firstHash = hashes.split(",").firstOrNull { it.isNotBlank() } ?: ""
         vkLinkInput = if (firstHash.isNotEmpty()) "https://vk.com/call/join/$firstHash" else ""
         workersInput = roundToGroup(workers.toFloat(), dynamicMaxWorkers)
+        BypassServerManager.loadCached(context)
         initialized = true
     }
 
+    LaunchedEffect(bypassServers.size) {
+        if (bypassServers.isNotEmpty() && selectedServer >= bypassServers.size) {
+            selectedServer = 0
+            settingsStore.saveBypassServerIndex(0)
+        }
+    }
     val currentWorkers = workersInput.coerceIn(WORKERS_PER_GROUP.toFloat(), dynamicMaxWorkers)
     val connectionPassword = "ByPassMe"
     val isValid = isVkLinkValid
@@ -129,8 +138,9 @@ fun BypassTabContent(
         saveJob?.cancel()
         saveJob = scope.launch {
             delay(300)
+            val peer = bypassServers.getOrNull(selectedServer)?.host ?: ""
             settingsStore.save(
-                BYPASS_SERVER_HOSTS[selectedServer], vkHash, "",
+                peer, vkHash, "",
                 currentWorkers.toInt(), "udp", 9000, "", false
             )
         }
@@ -139,7 +149,11 @@ fun BypassTabContent(
     var pendingStartAfterVpnPermission by remember { mutableStateOf(false) }
 
     fun startTunnelService() {
-        val peer = BYPASS_SERVER_HOSTS[selectedServer]
+        val server = bypassServers.getOrNull(selectedServer) ?: run {
+            Toast.makeText(context, "Выберите сервер", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val peer = server.host
         saveJob?.cancel()
         scope.launch {
             settingsStore.save(peer, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
@@ -148,7 +162,7 @@ fun BypassTabContent(
         }
         val intent = Intent(context, TunnelService::class.java).apply {
             action = "START"
-            putExtra("peer", "$peer:56000")
+            putExtra("peer", server.peer)
             putExtra("vk_hashes", vkHash)
             putExtra("secondary_vk_hash", "")
             putExtra("workers_per_hash", currentWorkers.toInt())
@@ -186,7 +200,15 @@ fun BypassTabContent(
     if (showSubDialog) {
         BypassSubscriptionDialog(
             initialUrl = settingsStore.vpnSubscriptionUrl.collectAsState(initial = "").value,
-            onSuccess = { showSubDialog = false },
+            onSuccess = {
+                showSubDialog = false
+                scope.launch {
+                    isRefreshing = true
+                    val ok = BypassServerManager.fetchServers(context)
+                    isRefreshing = false
+                    if (ok) Toast.makeText(context, "Список серверов обновлён", Toast.LENGTH_SHORT).show()
+                }
+            },
             onDeviceLimitExceeded = { showSubDialog = false; showDeviceLimit = true },
             onDismiss = { showSubDialog = false }
         )
@@ -226,13 +248,41 @@ fun BypassTabContent(
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurface
             )
-            IconButton(onClick = { showSubDialog = true }) {
-                Icon(
-                    Icons.Default.Key,
-                    contentDescription = "Подписка",
-                    tint = if (savedUuid.isEmpty()) MaterialTheme.colorScheme.error
-                           else MaterialTheme.colorScheme.primary
-                )
+            Row {
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            isRefreshing = true
+                            val ok = BypassServerManager.fetchServers(context)
+                            isRefreshing = false
+                            Toast.makeText(
+                                context,
+                                if (ok) "Список серверов обновлён"
+                                else "Нет связи · используется кэш",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    },
+                    enabled = !isRefreshing
+                ) {
+                    if (isRefreshing) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Обновить серверы",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                IconButton(onClick = { showSubDialog = true }) {
+                    Icon(
+                        Icons.Default.Key,
+                        contentDescription = "Подписка",
+                        tint = if (savedUuid.isEmpty()) MaterialTheme.colorScheme.error
+                               else MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
 
@@ -251,17 +301,35 @@ fun BypassTabContent(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 4.dp)
                 )
-                BYPASS_SERVER_NAMES.forEachIndexed { index, name ->
-                    if (index > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
-                    BypassServerRow(
-                        name = name,
-                        selected = selectedServer == index,
-                        disabled = tunnelRunning,
-                        onTap = {
-                            selectedServer = index
-                            scope.launch { settingsStore.saveBypassServerIndex(index) }
-                        }
+                if (bypassServers.isEmpty()) {
+                    Text(
+                        if (isRefreshing) "Загрузка серверов…"
+                        else "Нет серверов в кэше · нажмите ↻ при появлении интернета",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
                     )
+                } else {
+                    val serverScroll = rememberScrollState()
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = SERVER_LIST_MAX_HEIGHT.dp)
+                            .verticalScroll(serverScroll)
+                    ) {
+                        bypassServers.forEachIndexed { index, server ->
+                            if (index > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                            BypassServerRow(
+                                name = server.name,
+                                selected = selectedServer == index,
+                                disabled = tunnelRunning,
+                                onTap = {
+                                    selectedServer = index
+                                    scope.launch { settingsStore.saveBypassServerIndex(index) }
+                                    scheduleSave()
+                                }
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.height(4.dp))
             }
@@ -336,7 +404,7 @@ fun BypassTabContent(
                 if (tunnelRunning) context.startService(Intent(context, TunnelService::class.java).apply { action = "STOP" })
                 else requestVpnAndStart()
             },
-            enabled = (isValid && cooldownSeconds == 0) || tunnelRunning,
+            enabled = ((isValid && bypassServers.isNotEmpty() && cooldownSeconds == 0) || tunnelRunning),
             modifier = Modifier.fillMaxWidth().height(50.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(

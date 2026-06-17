@@ -58,6 +58,8 @@ class SettingsStore(context: Context) {
 
         // ═══ Bypass ═══
         private val BYPASS_SERVER_INDEX = intPreferencesKey("bypass_server_index")
+        private val BYPASS_SERVERS_JSON = stringPreferencesKey("bypass_servers_json")
+        private val VPN_SUB_KEY = stringPreferencesKey("vpn_sub_key")
 
         // ═══ Basic VPN ═══
         private val VPN_UUID = stringPreferencesKey("vpn_uuid")
@@ -134,6 +136,8 @@ class SettingsStore(context: Context) {
 
     // ═══ Bypass ═══
     val bypassServerIndex: Flow<Int> = dataStore.data.map { it[BYPASS_SERVER_INDEX] ?: 0 }
+    val bypassServersJson: Flow<String> = dataStore.data.map { it[BYPASS_SERVERS_JSON] ?: "" }
+    val vpnSubKey: Flow<String> = dataStore.data.map { it[VPN_SUB_KEY] ?: "" }
 
     // ═══ Basic VPN ═══
     val vpnUuid: Flow<String> = dataStore.data.map { it[VPN_UUID] ?: "" }
@@ -349,6 +353,14 @@ class SettingsStore(context: Context) {
         dataStore.edit { prefs -> prefs[BYPASS_SERVER_INDEX] = index }
     }
 
+    suspend fun saveBypassServersJson(json: String) {
+        dataStore.edit { prefs -> prefs[BYPASS_SERVERS_JSON] = json }
+    }
+
+    suspend fun saveVpnSubKey(key: String) {
+        dataStore.edit { prefs -> prefs[VPN_SUB_KEY] = key }
+    }
+
     suspend fun saveVpnServerIndex(index: Int) {
         dataStore.edit { prefs -> prefs[VPN_SERVER_INDEX] = index }
     }
@@ -370,9 +382,11 @@ class SettingsStore(context: Context) {
 
     /** При первом успешном вводе — сбрасываем кешированный статус */
     suspend fun saveVpnCredentials(uuid: String, url: String, status: SubscriptionStatus) {
+        val subKey = SubscriptionChecker.extractSubKey(url)
         dataStore.edit { prefs ->
             prefs[VPN_UUID] = uuid
             prefs[VPN_SUBSCRIPTION_URL] = url
+            if (subKey.isNotEmpty()) prefs[VPN_SUB_KEY] = subKey
             prefs[VPN_STATUS_VALID] = true
             if (status.expireAt > 0L) prefs[VPN_EXPIRE_AT] = status.expireAt
             if (status.devicesUsed >= 0) prefs[VPN_DEVICES_USED] = status.devicesUsed
@@ -385,9 +399,11 @@ class SettingsStore(context: Context) {
     suspend fun saveVpnCredentialsFull(
         uuid: String, url: String, status: String, daysLeft: Int, expireAt: Long
     ) {
+        val subKey = SubscriptionChecker.extractSubKey(url)
         dataStore.edit { prefs ->
             prefs[VPN_UUID]             = uuid
             prefs[VPN_SUBSCRIPTION_URL] = url
+            if (subKey.isNotEmpty()) prefs[VPN_SUB_KEY] = subKey
             prefs[VPN_STATUS_STRING]    = status
             prefs[VPN_DAYS_LEFT]        = daysLeft
             prefs[VPN_EXPIRE_AT]        = expireAt
@@ -400,7 +416,8 @@ class SettingsStore(context: Context) {
     suspend fun revokeVpnAccess(reason: String = "") {
         dataStore.edit { prefs ->
             prefs.remove(VPN_UUID)
-            prefs.remove(VPN_SUBSCRIPTION_URL)
+            // Ссылку и sub_key сохраняем — нужны для обновления списка серверов при появлении сети.
+            // bypass_servers_json тоже не трогаем — офлайн-доступ к серверам.
             prefs[VPN_STATUS_VALID] = false
             prefs[VPN_STATUS_LAST_CHECK] = System.currentTimeMillis()
             if (reason.isNotEmpty()) prefs[VPN_REVOKE_REASON] = reason
