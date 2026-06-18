@@ -150,14 +150,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Опрос каждые 15 секунд — мгновенное обнаружение удаления устройства
+            // Опрос каждые 5 секунд — удаление устройства в боте → онбординг + стоп VPN
             LaunchedEffect(Unit) {
                 while (true) {
-                    kotlinx.coroutines.delay(15_000)
                     val url = settingsStore.vpnSubscriptionUrl.first()
                     if (url.isNotEmpty()) {
                         SubscriptionChecker.refreshInBackground(appContext, this)
                     }
+                    kotlinx.coroutines.delay(5_000)
                 }
             }
 

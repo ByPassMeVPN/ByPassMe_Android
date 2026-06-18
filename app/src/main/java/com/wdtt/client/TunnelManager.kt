@@ -175,10 +175,9 @@ object TunnelManager {
                     "-device-id", androidId
                 )
 
-                if (params.connectionPassword.isNotEmpty()) {
-                    cmd.add("-password")
-                    cmd.add(params.connectionPassword)
-                }
+                val password = params.connectionPassword.ifBlank { "ByPassMe" }
+                cmd.add("-password")
+                cmd.add(password)
 
                 // Captcha mode: auto/wv/rjs
                 cmd.add("-captcha-mode")

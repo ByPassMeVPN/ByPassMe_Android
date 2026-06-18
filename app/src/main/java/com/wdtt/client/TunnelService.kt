@@ -124,7 +124,7 @@ class TunnelService : Service() {
                     workersPerHash = store.workersPerHash.first(),
                     port = store.listenPort.first(),
                     sni = store.sni.first(),
-                    connectionPassword = store.connectionPassword.first(),
+                    connectionPassword = store.connectionPassword.first().ifBlank { "ByPassMe" },
                     captchaMode = sanitizeCaptchaMode(store.captchaMode.first()),
                     captchaSolveMethod = store.captchaSolveMethod.first()
                 )

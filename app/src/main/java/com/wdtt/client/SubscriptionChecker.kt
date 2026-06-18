@@ -63,8 +63,8 @@ object SubscriptionChecker {
                 conn.setRequestProperty("X-HWID",        androidId)
                 conn.setRequestProperty("X-Device-Name", deviceName)
                 conn.setRequestProperty("User-Agent",    "ByPassMe/2.0 Android/${Build.VERSION.RELEASE}")
-                conn.connectTimeout = 10_000
-                conn.readTimeout    = 10_000
+                conn.connectTimeout = 5_000
+                conn.readTimeout    = 5_000
                 conn.instanceFollowRedirects = true
 
                 val code = conn.responseCode
