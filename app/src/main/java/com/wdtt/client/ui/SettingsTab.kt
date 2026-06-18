@@ -119,18 +119,40 @@ fun BypassTabContent(
     LaunchedEffect(Unit) {
         val hashes = settingsStore.vkHashes.first()
         val workers = settingsStore.workersPerHash.first()
-        selectedServer = settingsStore.bypassServerIndex.first()
+        val savedPeer = settingsStore.peer.first()
+        val savedIndex = settingsStore.bypassServerIndex.first()
         val firstHash = hashes.split(",").firstOrNull { it.isNotBlank() } ?: ""
         vkLinkInput = if (firstHash.isNotEmpty()) "https://vk.com/call/join/$firstHash" else ""
         workersInput = roundToGroup(workers.toFloat(), dynamicMaxWorkers)
         BypassServerManager.loadCached(context)
+        val list = BypassServerManager.servers.value
+        selectedServer = when {
+            list.isEmpty() -> savedIndex
+            savedPeer.isNotBlank() -> {
+                val byHost = list.indexOfFirst { it.host == savedPeer }
+                if (byHost >= 0) byHost else BypassServerManager.defaultServerIndex(list)
+            }
+            savedIndex in list.indices -> savedIndex
+            else -> BypassServerManager.defaultServerIndex(list)
+        }
+        if (list.isNotEmpty()) settingsStore.saveBypassServerIndex(selectedServer)
         initialized = true
     }
 
     LaunchedEffect(bypassServers.size) {
-        if (bypassServers.isNotEmpty() && selectedServer >= bypassServers.size) {
-            selectedServer = 0
-            settingsStore.saveBypassServerIndex(0)
+        if (bypassServers.isEmpty()) return@LaunchedEffect
+        val savedPeer = settingsStore.peer.first()
+        val matched = if (savedPeer.isNotBlank()) {
+            bypassServers.indexOfFirst { it.host == savedPeer }
+        } else -1
+        val newIndex = when {
+            matched >= 0 -> matched
+            selectedServer in bypassServers.indices -> selectedServer
+            else -> BypassServerManager.defaultServerIndex(bypassServers)
+        }
+        if (newIndex != selectedServer) {
+            selectedServer = newIndex
+            settingsStore.saveBypassServerIndex(newIndex)
         }
     }
 
@@ -150,7 +172,7 @@ fun BypassTabContent(
                 "Подписка не найдена"
             BypassServerManager.FetchResult.NoSubscription ->
                 "Сначала введите ссылку подписки"
-            else -> "Не удалось загрузить · используется кэш"
+            else -> "Не удалось загрузить с hub.mos.ru · используется кэш"
         }
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }

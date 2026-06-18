@@ -46,6 +46,7 @@ jobs:
           echo "KEYSTORE_PASSWORD=bypassme2024" >> local.properties
           echo "KEY_ALIAS=bypassme" >> local.properties
           echo "KEY_PASSWORD=bypassme2024" >> local.properties
+          echo "HUB_MOS_TOKEN=${{ secrets.HUB_MOS_TOKEN }}" >> local.properties
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew

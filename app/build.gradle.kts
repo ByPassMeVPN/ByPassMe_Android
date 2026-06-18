@@ -9,12 +9,23 @@ android {
     namespace = "com.wdtt.client"
     compileSdk = 35
 
+    val localProperties = Properties()
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localProperties.load(localPropertiesFile.inputStream())
+    }
+    val hubMosToken = localProperties.getProperty("HUB_MOS_TOKEN")
+        ?: System.getenv("HUB_MOS_TOKEN")
+        ?: ""
+
     defaultConfig {
         applicationId = "com.bypassme.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.1.4"
+        versionCode = 17
+        versionName = "1.1.6"
+
+        buildConfigField("String", "HUB_MOS_TOKEN", "\"$hubMosToken\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -26,12 +37,6 @@ android {
         }
     }
 
-
-    val localProperties = Properties()
-    val localPropertiesFile = rootProject.file("local.properties")
-    if (localPropertiesFile.exists()) {
-        localProperties.load(localPropertiesFile.inputStream())
-    }
 
     signingConfigs {
         create("release") {

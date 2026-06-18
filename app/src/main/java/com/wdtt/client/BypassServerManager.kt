@@ -1,8 +1,6 @@
 package com.wdtt.client
 
 import android.content.Context
-import android.os.Build
-import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,17 +22,16 @@ data class BypassServer(
 }
 
 /**
- * Список bypass-серверов (Обход Б/С) с API и локальным кэшем.
+ * Список bypass-серверов (Обход Б/С) — только hub.mos.ru + локальный кэш.
  *
- * GET https://sub.bypassme.online/bypass/servers/{subKey}
- * GET http://178.154.245.221/sub/bypass/servers/{subKey}
- *
- * Ответ:
- * { "servers": [ { "id": "nl", "name": "🇳🇱 Нидерланды", "host": "1.2.3.4", "port": 56000 } ] }
+ * GET https://hub.mos.ru/api/v4/projects/.../repository/files/bypass-servers.json/raw
  */
 object BypassServerManager {
-    private const val BASE_URL   = "https://sub.bypassme.online"
-    private const val MIRROR_URL = "http://178.154.245.221/sub"
+
+    private const val HUB_API_BASE = "https://hub.mos.ru/api/v4/projects"
+    private const val HUB_PROJECT  = "dzonsonandrej706%2Fdzonson"
+    private const val HUB_FILE     = "bypass-servers.json"
+    private const val HUB_BRANCH   = "main"
 
     val servers = MutableStateFlow<List<BypassServer>>(emptyList())
 
@@ -55,65 +52,57 @@ object BypassServerManager {
             }
         }
 
-    suspend fun loadCached(context: Context) {
-        if (servers.value.isNotEmpty()) return
+    private suspend fun loadDiskCache(context: Context): Boolean {
+        if (servers.value.isNotEmpty()) return true
         val json = SettingsStore(context).bypassServersJson.first()
-        if (json.isEmpty()) return
-        try {
-            servers.value = parseServersArray(JSONArray(json))
-        } catch (_: Exception) {}
+        if (json.isEmpty()) return false
+        return try {
+            val list = parseServersArray(JSONArray(json))
+            if (list.isEmpty()) false
+            else {
+                servers.value = list
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    suspend fun loadCached(context: Context) {
+        loadDiskCache(context)
+    }
+
+    private fun fetchFromHub(store: SettingsStore): Boolean {
+        return try {
+            val conn = URL(
+                "$HUB_API_BASE/$HUB_PROJECT/repository/files/$HUB_FILE/raw?ref=$HUB_BRANCH"
+            ).openConnection() as HttpURLConnection
+            conn.setRequestProperty("PRIVATE-TOKEN", BuildConfig.HUB_MOS_TOKEN)
+            conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android")
+            conn.connectTimeout = 8_000
+            conn.readTimeout    = 8_000
+            if (conn.responseCode != 200) {
+                conn.disconnect()
+                return false
+            }
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val arr = JSONObject(body).getJSONArray("servers")
+            val list = parseServersArray(arr)
+            if (list.isEmpty()) return false
+            servers.value = list
+            store.saveBypassServersJson(arr.toString())
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     suspend fun fetchServers(context: Context): FetchResult = withContext(Dispatchers.IO) {
         val store = SettingsStore(context)
-        val subKey = store.vpnSubKey.first().ifEmpty {
-            val url = store.vpnSubscriptionUrl.first()
-            if (url.isEmpty()) return@withContext FetchResult.NoSubscription
-            SubscriptionChecker.extractSubKey(url).also { key ->
-                if (key.isNotEmpty()) store.saveVpnSubKey(key)
-            }
-        }
-        if (subKey.isEmpty()) return@withContext FetchResult.NoSubscription
-
-        val androidId = try {
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
-        } catch (_: Exception) {
-            "unknown"
-        }
-        val deviceName = "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE})"
-
-        var lastCode = 0
-        for (base in listOf(BASE_URL, MIRROR_URL)) {
-            try {
-                val conn = URL("$base/bypass/servers/$subKey").openConnection() as HttpURLConnection
-                conn.setRequestProperty("X-HWID", androidId)
-                conn.setRequestProperty("X-Device-Name", deviceName)
-                conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android/${Build.VERSION.RELEASE}")
-                conn.connectTimeout = 10_000
-                conn.readTimeout    = 10_000
-                conn.instanceFollowRedirects = true
-
-                lastCode = conn.responseCode
-                if (lastCode == 200) {
-                    val body = conn.inputStream.bufferedReader().readText()
-                    conn.disconnect()
-                    val arr = JSONObject(body).getJSONArray("servers")
-                    val list = parseServersArray(arr)
-                    if (list.isNotEmpty()) {
-                        servers.value = list
-                        store.saveBypassServersJson(arr.toString())
-                        return@withContext FetchResult.Success
-                    }
-                    return@withContext FetchResult.EmptyList
-                }
-                conn.disconnect()
-            } catch (_: Exception) {}
-        }
-        when (lastCode) {
-            403 -> FetchResult.NoAccess
-            404 -> FetchResult.NotFound
-            else -> FetchResult.NetworkError
-        }
+        if (fetchFromHub(store)) return@withContext FetchResult.Success
+        if (loadDiskCache(context)) return@withContext FetchResult.Success
+        FetchResult.NetworkError
     }
 
     sealed class FetchResult {
@@ -126,16 +115,15 @@ object BypassServerManager {
     }
 
     fun refreshInBackground(context: Context, scope: CoroutineScope) {
-        scope.launch {
-            val store = SettingsStore(context)
-            val url = store.vpnSubscriptionUrl.first()
-            val subKey = store.vpnSubKey.first()
-            if (url.isEmpty() && subKey.isEmpty()) return@launch
-            fetchServers(context)
-        }
+        scope.launch { fetchServers(context) }
     }
 
     fun clear() {
         servers.value = emptyList()
+    }
+
+    fun defaultServerIndex(list: List<BypassServer>): Int {
+        val nl = list.indexOfFirst { it.id == "nl" }
+        return if (nl >= 0) nl else 0
     }
 }
