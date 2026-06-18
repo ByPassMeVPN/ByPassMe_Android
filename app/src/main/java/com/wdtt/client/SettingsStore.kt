@@ -412,15 +412,20 @@ class SettingsStore(context: Context) {
         }
     }
 
-    /** Очистить данные устройства (устройство удалено или подписка отозвана) */
+    /** Полный отзыв доступа: онбординг, без кэша серверов и сохранённой ссылки. */
     suspend fun revokeVpnAccess(reason: String = "") {
         dataStore.edit { prefs ->
             prefs.remove(VPN_UUID)
-            // Ссылку и sub_key сохраняем — нужны для обновления списка серверов при появлении сети.
-            // bypass_servers_json тоже не трогаем — офлайн-доступ к серверам.
+            prefs.remove(VPN_SUBSCRIPTION_URL)
+            prefs.remove(VPN_SUB_KEY)
+            prefs.remove(BYPASS_SERVERS_JSON)
+            prefs.remove(VPN_EXPIRE_AT)
+            prefs[VPN_DAYS_LEFT] = 0
+            prefs[VPN_STATUS_STRING] = "unknown"
             prefs[VPN_STATUS_VALID] = false
             prefs[VPN_STATUS_LAST_CHECK] = System.currentTimeMillis()
             if (reason.isNotEmpty()) prefs[VPN_REVOKE_REASON] = reason
+            else prefs.remove(VPN_REVOKE_REASON)
         }
     }
 

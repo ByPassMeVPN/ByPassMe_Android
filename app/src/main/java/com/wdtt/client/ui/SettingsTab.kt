@@ -37,6 +37,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -62,7 +63,10 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private const val WORKERS_PER_GROUP = 12
-private const val SERVER_LIST_MAX_HEIGHT = 200
+/** Высота одной строки сервера — фиксированная, чтобы список не разъезжался. */
+private const val SERVER_ROW_HEIGHT = 48
+/** «Подглядывание» третьего сервера — намёк, что список листается. */
+private const val SERVER_LIST_PEEK = 18
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -331,26 +335,16 @@ fun BypassTabContent(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
                     )
                 } else {
-                    val serverScroll = rememberScrollState()
-                    Column(
-                        modifier = Modifier
-                            .heightIn(max = SERVER_LIST_MAX_HEIGHT.dp)
-                            .verticalScroll(serverScroll)
-                    ) {
-                        bypassServers.forEachIndexed { index, server ->
-                            if (index > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
-                            BypassServerRow(
-                                name = server.name,
-                                selected = selectedServer == index,
-                                disabled = tunnelRunning,
-                                onTap = {
-                                    selectedServer = index
-                                    scope.launch { settingsStore.saveBypassServerIndex(index) }
-                                    scheduleSave()
-                                }
-                            )
+                    BypassServerList(
+                        servers = bypassServers,
+                        selectedIndex = selectedServer,
+                        disabled = tunnelRunning,
+                        onSelect = { index ->
+                            selectedServer = index
+                            scope.launch { settingsStore.saveBypassServerIndex(index) }
+                            scheduleSave()
                         }
-                    }
+                    )
                 }
                 Spacer(Modifier.height(4.dp))
             }
@@ -461,6 +455,88 @@ fun BypassTabContent(
 
 // ═══ Строка выбора сервера ═══
 @Composable
+private fun BypassServerList(
+    servers: List<com.wdtt.client.BypassServer>,
+    selectedIndex: Int,
+    disabled: Boolean,
+    onSelect: (Int) -> Unit
+) {
+    val scrollState = rememberScrollState()
+    val canScrollDown by remember { derivedStateOf { scrollState.canScrollForward } }
+    val canScrollUp by remember { derivedStateOf { scrollState.canScrollBackward } }
+    val rowHeight = SERVER_ROW_HEIGHT.dp
+    val peek = SERVER_LIST_PEEK.dp
+    val listHeight = when {
+        servers.size <= 1 -> rowHeight * servers.size.coerceAtLeast(1)
+        servers.size == 2 -> rowHeight * 2
+        else -> rowHeight * 2 + peek
+    }
+    val cardColor = MaterialTheme.colorScheme.surface
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(listHeight)
+            .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+        ) {
+            servers.forEachIndexed { index, server ->
+                if (index > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                BypassServerRow(
+                    name = server.name,
+                    selected = selectedIndex == index,
+                    disabled = disabled,
+                    onTap = { onSelect(index) }
+                )
+            }
+        }
+
+        if (servers.size > 2 && canScrollUp) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(20.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            0f to cardColor,
+                            1f to Color.Transparent
+                        )
+                    )
+            )
+        }
+
+        if (servers.size > 2 && canScrollDown) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.55f to cardColor.copy(alpha = 0.85f),
+                            1f to cardColor
+                        )
+                    )
+            )
+            Text(
+                "↓ листайте",
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 4.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+            )
+        }
+    }
+}
+
+@Composable
 private fun BypassServerRow(name: String, selected: Boolean, disabled: Boolean, onTap: () -> Unit) {
     val flag = name.split(" ").firstOrNull() ?: ""
     val country = name.removePrefix(flag).trim()
@@ -468,10 +544,14 @@ private fun BypassServerRow(name: String, selected: Boolean, disabled: Boolean, 
         onClick = { if (!disabled) onTap() },
         enabled = !disabled,
         color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else androidx.compose.ui.graphics.Color.Transparent,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SERVER_ROW_HEIGHT.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {

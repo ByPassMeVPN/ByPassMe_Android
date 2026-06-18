@@ -121,8 +121,6 @@ class MainActivity : ComponentActivity() {
             val appContext = this
 
             val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
-            val bypassCacheJson by settingsStore.bypassServersJson.collectAsStateWithLifecycle(initialValue = "")
-            val bypassServers by BypassServerManager.servers.collectAsStateWithLifecycle()
 
             // Загружаем кеш и запускаем фоновую проверку при старте
             LaunchedEffect(Unit) {
@@ -148,10 +146,7 @@ class MainActivity : ComponentActivity() {
             val subStatus by SubscriptionChecker.status.collectAsStateWithLifecycle()
             LaunchedEffect(subStatus) {
                 if (subStatus == "expired" && savedUuid.isNotBlank()) {
-                    appContext.startService(
-                        Intent(appContext, TunnelService::class.java).apply { action = "STOP" }
-                    )
-                    settingsStore.revokeVpnAccess("expired")
+                    SubscriptionChecker.revokeAccess(appContext, "expired")
                 }
             }
 
@@ -167,8 +162,7 @@ class MainActivity : ComponentActivity() {
             }
 
             WDTTTheme(themeMode = themeMode, dynamicColor = isDynamicColor, themePalette = themePalette) {
-                val hasBypassCache = bypassCacheJson.isNotEmpty() || bypassServers.isNotEmpty()
-                if (savedUuid.isBlank() && !hasBypassCache) {
+                if (savedUuid.isBlank()) {
                     OnboardingScreen(settingsStore = settingsStore, context = appContext)
                 } else {
                     MainScreen(
@@ -247,10 +241,6 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
         val reason = settingsStore.vpnRevokeReason.first()
         displayReason = reason
         if (reason.isNotEmpty()) settingsStore.clearRevokeReason()
-        if (inputText.isEmpty()) {
-            val savedUrl = settingsStore.vpnSubscriptionUrl.first()
-            if (savedUrl.isNotEmpty()) inputText = savedUrl
-        }
     }
 
     if (showDeviceLimitDialog) {
@@ -308,7 +298,7 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
                         )
                     }
                 }
-                "blocked" -> {
+                "blocked", "removed" -> {
                     Text(
                         "Устройство удалено из подписки. Вставьте ссылку заново, чтобы переподключиться.",
                         style = MaterialTheme.typography.bodyMedium,

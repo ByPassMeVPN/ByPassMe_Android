@@ -1,6 +1,7 @@
 package com.wdtt.client
 
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import kotlinx.coroutines.Dispatchers
@@ -77,15 +78,11 @@ object SubscriptionChecker {
                         return@withContext when (error) {
                             "device_limit"   -> Result.DeviceLimitExceeded
                             "device_blocked" -> {
-                                SettingsStore(context).revokeVpnAccess("blocked")
-                                status.value   = "unknown"
-                                daysLeft.value = 0
+                                revokeAccess(context, "blocked")
                                 Result.DeviceBlocked
                             }
                             "device_removed" -> {
-                                SettingsStore(context).revokeVpnAccess("removed")
-                                status.value   = "unknown"
-                                daysLeft.value = 0
+                                revokeAccess(context, "removed")
                                 Result.DeviceRemoved
                             }
                             else -> Result.Error("Ошибка доступа (403)")
@@ -158,29 +155,26 @@ object SubscriptionChecker {
         }
     }
 
+    /** Полный отзыв: DataStore, кэш серверов, остановка туннеля. */
+    suspend fun revokeAccess(context: Context, reason: String) {
+        SettingsStore(context).revokeVpnAccess(reason)
+        BypassServerManager.clear()
+        status.value = "unknown"
+        daysLeft.value = 0
+        context.startService(
+            Intent(context, TunnelService::class.java).apply { action = "STOP" }
+        )
+    }
+
     /** Фоновый refresh при каждом запуске */
     fun refreshInBackground(context: Context, scope: CoroutineScope) {
         scope.launch {
             val url = SettingsStore(context).vpnSubscriptionUrl.first()
             if (url.isEmpty()) return@launch
             when (fetch(context, url)) {
-                // device_blocked → revokeVpnAccess уже вызван внутри fetch()
-                // device_limit → устройство удалено + лимит полный → тоже отзываем доступ
-                is Result.DeviceBlocked,
-                is Result.DeviceLimitExceeded -> {
-                    SettingsStore(context).revokeVpnAccess("blocked")
-                    status.value   = "unknown"
-                    daysLeft.value = 0
-                }
-                is Result.DeviceRemoved -> {
-                    // revokeVpnAccess уже вызван внутри fetch(), останавливаем туннель
-                    context.startService(
-                        android.content.Intent(context, TunnelService::class.java).apply { action = "STOP" }
-                    )
-                    status.value   = "unknown"
-                    daysLeft.value = 0
-                }
-                // Сетевые ошибки — игнорируем, кеш остаётся
+                // device_blocked / device_removed → revokeAccess уже внутри fetch()
+                is Result.DeviceLimitExceeded -> revokeAccess(context, "blocked")
+                // Сетевые ошибки — uuid и кэш остаются для офлайн-работы
                 else -> {}
             }
         }

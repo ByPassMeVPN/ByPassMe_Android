@@ -134,4 +134,8 @@ object BypassServerManager {
             fetchServers(context)
         }
     }
+
+    fun clear() {
+        servers.value = emptyList()
+    }
 }
