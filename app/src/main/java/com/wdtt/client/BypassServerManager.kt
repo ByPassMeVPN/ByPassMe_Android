@@ -72,7 +72,7 @@ object BypassServerManager {
         loadDiskCache(context)
     }
 
-    private fun fetchFromHub(store: SettingsStore): Boolean {
+    private suspend fun fetchFromHub(store: SettingsStore): Boolean {
         return try {
             val conn = URL(
                 "$HUB_API_BASE/$HUB_PROJECT/repository/files/$HUB_FILE/raw?ref=$HUB_BRANCH"
