@@ -342,7 +342,7 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
                     isLoading = true
                     errorText = ""
                     scope.launch {
-                        when (val result = SubscriptionChecker.fetch(context, inputText.trim())) {
+                        when (val result = SubscriptionChecker.fetch(context, inputText.trim(), reconnect = true)) {
                             is SubscriptionChecker.Result.Success -> {
                                 BypassServerManager.fetchServers(context)
                                 isLoading = false
@@ -357,7 +357,7 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
                             }
                             is SubscriptionChecker.Result.DeviceRemoved -> {
                                 isLoading = false
-                                errorText = "Устройство отключено. Вставьте ссылку заново."
+                                errorText = "Не удалось переподключить. Проверьте лимит устройств в боте."
                             }
                             is SubscriptionChecker.Result.Error -> {
                                 isLoading = false

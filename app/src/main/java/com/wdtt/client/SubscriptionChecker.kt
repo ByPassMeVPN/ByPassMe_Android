@@ -50,7 +50,7 @@ object SubscriptionChecker {
         } catch (_: Exception) { trimmed }
     }
 
-    suspend fun fetch(context: Context, url: String): Result = withContext(Dispatchers.IO) {
+    suspend fun fetch(context: Context, url: String, reconnect: Boolean = false): Result = withContext(Dispatchers.IO) {
         val subKey     = extractSubKey(url)
         val androidId  = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE})"
@@ -63,6 +63,9 @@ object SubscriptionChecker {
                 conn.setRequestProperty("X-HWID",        androidId)
                 conn.setRequestProperty("X-Device-Name", deviceName)
                 conn.setRequestProperty("User-Agent",    "ByPassMe/2.0 Android/${Build.VERSION.RELEASE}")
+                if (reconnect) {
+                    conn.setRequestProperty("X-Device-Reconnect", "1")
+                }
                 conn.connectTimeout = 5_000
                 conn.readTimeout    = 5_000
                 conn.instanceFollowRedirects = true
@@ -125,6 +128,7 @@ object SubscriptionChecker {
                 daysLeft = daysL,
                 expireAt = expireAt
             )
+            store.clearRevokeReason()
             if (wdttPass.isNotEmpty()) {
                 store.saveConnectionPassword(wdttPass)
             }

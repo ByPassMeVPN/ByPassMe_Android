@@ -641,11 +641,11 @@ internal fun BypassSubscriptionDialog(
                     onClick = {
                         isLoading = true; errorText = ""
                         scope.launch {
-                            when (val result = com.wdtt.client.SubscriptionChecker.fetch(context, inputText.trim())) {
+                            when (val result = com.wdtt.client.SubscriptionChecker.fetch(context, inputText.trim(), reconnect = true)) {
                                 is com.wdtt.client.SubscriptionChecker.Result.Success -> onSuccess()
                                 is com.wdtt.client.SubscriptionChecker.Result.DeviceLimitExceeded -> { isLoading = false; onDeviceLimitExceeded() }
                                 is com.wdtt.client.SubscriptionChecker.Result.DeviceBlocked -> { isLoading = false; errorText = "Устройство заблокировано. Обратитесь в поддержку." }
-                                is com.wdtt.client.SubscriptionChecker.Result.DeviceRemoved -> { isLoading = false; errorText = "Устройство отключено. Вставьте ссылку заново." }
+                                is com.wdtt.client.SubscriptionChecker.Result.DeviceRemoved -> { isLoading = false; errorText = "Не удалось переподключить. Проверьте лимит устройств в боте." }
                                 is com.wdtt.client.SubscriptionChecker.Result.Error -> { isLoading = false; errorText = result.msg }
                             }
                         }

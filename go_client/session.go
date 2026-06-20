@@ -143,6 +143,11 @@ func RunSession(
 	defer relay.Close()
 	log.Printf("[СЕССИЯ #%d] Relay: %s", sessionID, relay.LocalAddr())
 
+	// Явное разрешение peer — без него VK TURN может не пропускать DTLS к VPS
+	if err = tc.CreatePermission(peer); err != nil {
+		return false, fmt.Errorf("TURN CreatePermission: %w", err)
+	}
+
 	// Pipe для DTLS ↔ TURN relay
 	pipeA, pipeB := connutil.AsyncPacketPipe()
 

@@ -22,8 +22,8 @@ android {
         applicationId = "com.bypassme.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 18
-        versionName = "1.1.7"
+        versionCode = 19
+        versionName = "1.1.8"
 
         buildConfigField("String", "HUB_MOS_TOKEN", "\"$hubMosToken\"")
 
