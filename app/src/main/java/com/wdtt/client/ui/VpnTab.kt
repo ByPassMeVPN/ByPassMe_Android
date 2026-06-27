@@ -62,6 +62,7 @@ private fun VpnTabContent(
 ) {
     val vpnRunning by XrayManager.running.collectAsStateWithLifecycle()
     val vpnConnecting by XrayManager.connecting.collectAsStateWithLifecycle()
+    val vpnError by XrayManager.lastError.collectAsStateWithLifecycle()
     val subStatus by SubscriptionChecker.status.collectAsStateWithLifecycle()
     val subDaysLeft by SubscriptionChecker.daysLeft.collectAsStateWithLifecycle()
     val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
@@ -73,6 +74,12 @@ private fun VpnTabContent(
     var showSubDialog by rememberSaveable { mutableStateOf(false) }
     var showDeviceLimit by rememberSaveable { mutableStateOf(false) }
     var pendingStartAfterVpnPermission by remember { mutableStateOf(false) }
+
+    LaunchedEffect(vpnError) {
+        if (vpnError.isNotBlank()) {
+            Toast.makeText(context, vpnError, Toast.LENGTH_LONG).show()
+        }
+    }
 
     LaunchedEffect(Unit) {
         val savedIndex = settingsStore.vpnServerIndex.first()

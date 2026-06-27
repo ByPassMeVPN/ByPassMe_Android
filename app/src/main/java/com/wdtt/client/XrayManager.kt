@@ -5,9 +5,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 object XrayManager {
@@ -17,6 +21,7 @@ object XrayManager {
     val lastError     = MutableStateFlow("")
 
     private var receiver: BroadcastReceiver? = null
+    private var connectTimeoutJob: Job? = null
 
     fun registerReceiver(context: Context) {
         if (receiver != null) return
@@ -25,15 +30,18 @@ object XrayManager {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
                     XrayVpnService.BROADCAST_RUNNING -> {
+                        cancelConnectTimeout()
                         running.value = true
                         connecting.value = false
                         lastError.value = ""
                     }
                     XrayVpnService.BROADCAST_STOPPED -> {
+                        cancelConnectTimeout()
                         running.value = false
                         connecting.value = false
                     }
                     XrayVpnService.BROADCAST_ERROR -> {
+                        cancelConnectTimeout()
                         running.value = false
                         connecting.value = false
                         lastError.value = intent.getStringExtra(XrayVpnService.EXTRA_ERROR_MSG)
@@ -93,12 +101,17 @@ object XrayManager {
         val idx = selectedIndex.value.coerceIn(list.indices)
         SettingsStore(context).saveVpnServerIndex(idx)
 
+        val server = list[idx]
+        val configJson = XrayConfigBuilder.build(server, uuid)
+
         connecting.value = true
+        scheduleConnectTimeout(context)
         ConnectionCoordinator.prepareForVpn(context)
-        XrayVpnService.start(context, list[idx].id)
+        XrayVpnService.start(context, server.id, configJson)
     }
 
     suspend fun stopVpn(context: Context) {
+        cancelConnectTimeout()
         connecting.value = false
         ConnectionCoordinator.stopVpn(context)
     }
@@ -120,6 +133,27 @@ object XrayManager {
         }
 
         connecting.value = true
-        XrayVpnService.start(context, list[serverIndex].id)
+        scheduleConnectTimeout(context)
+        val server = list[serverIndex]
+        val configJson = XrayConfigBuilder.build(server, uuid)
+        XrayVpnService.start(context, server.id, configJson)
+    }
+
+    private fun scheduleConnectTimeout(context: Context) {
+        cancelConnectTimeout()
+        val scope = CoroutineScope(Dispatchers.Main)
+        connectTimeoutJob = scope.launch {
+            delay(25_000)
+            if (connecting.value && !running.value) {
+                connecting.value = false
+                lastError.value = "Таймаут подключения VPN"
+                XrayVpnService.stop(context.applicationContext)
+            }
+        }
+    }
+
+    private fun cancelConnectTimeout() {
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = null
     }
 }

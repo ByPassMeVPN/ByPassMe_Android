@@ -39,6 +39,7 @@ class XrayVpnService : VpnService() {
         const val ACTION_START = "START_XRAY"
         const val ACTION_STOP  = "STOP_XRAY"
         const val EXTRA_SERVER_ID = "server_id"
+        const val EXTRA_CONFIG_JSON = "config_json"
 
         const val BROADCAST_RUNNING = "com.bypassme.VPN_RUNNING"
         const val BROADCAST_STOPPED = "com.bypassme.VPN_STOPPED"
@@ -46,11 +47,12 @@ class XrayVpnService : VpnService() {
         const val EXTRA_ERROR_MSG   = "error_msg"
         private const val PKG = "com.bypassme.app"
 
-        fun start(context: Context, serverId: String) {
+        fun start(context: Context, serverId: String, configJson: String) {
             context.startForegroundService(
                 Intent(context, XrayVpnService::class.java).apply {
                     action = ACTION_START
                     putExtra(EXTRA_SERVER_ID, serverId)
+                    putExtra(EXTRA_CONFIG_JSON, configJson)
                 }
             )
         }
@@ -99,6 +101,7 @@ class XrayVpnService : VpnService() {
     private var isRunning = false
     private var coreController: CoreController? = null
     private var hevTun2Socks: HevTun2Socks? = null
+    private var coreThread: Thread? = null
 
     private val coreCallback = object : CoreCallbackHandler {
         override fun startup(): Long = 0
@@ -138,9 +141,10 @@ class XrayVpnService : VpnService() {
         return when (intent?.action) {
             ACTION_START -> {
                 val serverId = intent.getStringExtra(EXTRA_SERVER_ID) ?: return START_NOT_STICKY
+                val configJson = intent.getStringExtra(EXTRA_CONFIG_JSON)
                 showNotification()
                 if (isRunning) stopAll()
-                setupAndStart(serverId)
+                setupAndStart(serverId, configJson)
                 START_STICKY
             }
             ACTION_STOP -> {
@@ -151,14 +155,15 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    private fun setupAndStart(serverId: String) {
+    private fun setupAndStart(serverId: String, configFromIntent: String?) {
         if (prepare(this) != null) {
             fail("VPN-разрешение не выдано")
             return
         }
 
-        val configJson = runBlocking { buildConfigJson(serverId) }
-        if (configJson == null) {
+        val configJson = configFromIntent?.takeIf { it.isNotBlank() }
+            ?: runBlocking { buildConfigJson(serverId) }
+        if (configJson.isNullOrBlank()) {
             fail("Не удалось собрать конфиг VPN")
             return
         }
@@ -218,7 +223,7 @@ class XrayVpnService : VpnService() {
     }
 
     /**
-     * v2rayNG / INCY схема: xray слушает SOCKS, hev-socks5-tunnel мостит TUN → SOCKS.
+     * v2rayNG: startLoop блокирует поток — запускаем xray в фоне, затем hev TUN → SOCKS.
      */
     private fun startXrayCore(configJson: String) {
         try {
@@ -230,14 +235,35 @@ class XrayVpnService : VpnService() {
 
             val ctrl = Libv2ray.newCoreController(coreCallback)
             coreController = ctrl
-            ctrl.startLoop(configJson, 0)
 
+            coreThread = Thread({
+                try {
+                    ctrl.startLoop(configJson, 0)
+                } catch (e: Exception) {
+                    Log.e(TAG, "startLoop ended: ${e.message}", e)
+                }
+            }, "xray-core-loop").also { it.start() }
+
+            var waited = 0
+            while (!ctrl.isRunning && waited < 100) {
+                Thread.sleep(100)
+                waited++
+            }
             if (!ctrl.isRunning) {
-                fail("xray не запустился")
+                fail("xray не запустился (таймаут)")
                 return
             }
 
-            hevTun2Socks = HevTun2Socks(this, vpnInterface).also { it.start() }
+            Thread({
+                try {
+                    hevTun2Socks = HevTun2Socks(this@XrayVpnService, vpnInterface).also { it.start() }
+                } catch (e: Exception) {
+                    Log.e(TAG, "hev start failed: ${e.message}", e)
+                    fail("TUN туннель: ${e.message ?: "ошибка"}")
+                }
+            }, "hev-tun2socks").start()
+
+            Thread.sleep(200)
             sendBroadcast(Intent(BROADCAST_RUNNING).setPackage(PKG))
             Log.i(TAG, "VPN tunnel started (hev-socks5 + xray)")
         } catch (e: Exception) {
@@ -254,6 +280,8 @@ class XrayVpnService : VpnService() {
     private fun stopCore() {
         try { coreController?.let { if (it.isRunning) it.stopLoop() } } catch (_: Exception) {}
         coreController = null
+        coreThread?.interrupt()
+        coreThread = null
     }
 
     private fun stopAll() {
