@@ -358,6 +358,10 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
                                 isLoading = false
                                 errorText = "Не удалось переподключить. Проверьте лимит устройств в боте."
                             }
+                            is SubscriptionChecker.Result.Revoked -> {
+                                isLoading = false
+                                errorText = "Подписка не найдена или истекла."
+                            }
                             is SubscriptionChecker.Result.Error -> {
                                 isLoading = false
                                 errorText = result.msg
