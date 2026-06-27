@@ -50,9 +50,11 @@ jobs:
 
       - name: Download hiddify-core (sing-box)
         run: |
+          mkdir -p app/libs
           curl -sL -o /tmp/hiddify-lib-android.tar.gz \
-            "https://github.com/hiddify/hiddify-next-core/releases/download/v4.1.0/hiddify-lib-android.tar.gz"
+            "https://github.com/hiddify/hiddify-core/releases/download/v4.1.0/hiddify-lib-android.tar.gz"
           tar -xzf /tmp/hiddify-lib-android.tar.gz -C app/libs/
+          ls -lh app/libs/
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
