@@ -105,7 +105,7 @@ object DefaultNetworkListener {
 
     suspend fun get(): Network = if (fallback) {
         @TargetApi(23)
-        Application.connectivity.activeNetwork
+        WdttApplication.connectivity.activeNetwork
             ?: error("missing default network") // failed to listen, return current if available
     } else {
         NetworkMessage.Get().run {
@@ -167,7 +167,7 @@ object DefaultNetworkListener {
             in 31..Int.MAX_VALUE ->
                 @TargetApi(31)
                 {
-                    Application.connectivity.registerBestMatchingNetworkCallback(
+                    WdttApplication.connectivity.registerBestMatchingNetworkCallback(
                         request,
                         Callback,
                         mainHandler,
@@ -177,25 +177,25 @@ object DefaultNetworkListener {
             in 28 until 31 ->
                 @TargetApi(28)
                 { // we want REQUEST here instead of LISTEN
-                    Application.connectivity.requestNetwork(request, Callback, mainHandler)
+                    WdttApplication.connectivity.requestNetwork(request, Callback, mainHandler)
                 }
 
             in 26 until 28 ->
                 @TargetApi(26)
                 {
-                    Application.connectivity.registerDefaultNetworkCallback(Callback, mainHandler)
+                    WdttApplication.connectivity.registerDefaultNetworkCallback(Callback, mainHandler)
                 }
 
             in 24 until 26 ->
                 @TargetApi(24)
                 {
-                    Application.connectivity.registerDefaultNetworkCallback(Callback)
+                    WdttApplication.connectivity.registerDefaultNetworkCallback(Callback)
                 }
 
             else ->
                 try {
                     fallback = false
-                    Application.connectivity.requestNetwork(request, Callback)
+                    WdttApplication.connectivity.requestNetwork(request, Callback)
                 } catch (e: RuntimeException) {
                     fallback =
                         true // known bug on API 23: https://stackoverflow.com/a/33509180/2245107
@@ -205,7 +205,7 @@ object DefaultNetworkListener {
 
     private fun unregister() {
         runCatching {
-            Application.connectivity.unregisterNetworkCallback(Callback)
+            WdttApplication.connectivity.unregisterNetworkCallback(Callback)
         }
     }
 }

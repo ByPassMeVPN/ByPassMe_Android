@@ -4,7 +4,7 @@ import android.net.Network
 import android.os.Build
 import com.wdtt.client.WdttApplication
 import com.hiddify.core.libbox.InterfaceUpdateListener
-import com.wdtt.client.vpn.constant.Bugs
+import com.wdtt.client.vpn.bg.Bugs
 
 
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +23,7 @@ object DefaultNetworkMonitor {
             checkDefaultInterfaceUpdate(it)
         }
         defaultNetwork = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Application.connectivity.activeNetwork
+            WdttApplication.connectivity.activeNetwork
         } else {
             DefaultNetworkListener.get()
         }
@@ -50,7 +50,7 @@ object DefaultNetworkMonitor {
         val listener = listener ?: return
         if (newNetwork != null) {
             val interfaceName =
-                (Application.connectivity.getLinkProperties(newNetwork) ?: return).interfaceName
+                (WdttApplication.connectivity.getLinkProperties(newNetwork) ?: return).interfaceName
             for (times in 0 until 10) {
                 var interfaceIndex: Int
                 try {

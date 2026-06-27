@@ -53,7 +53,7 @@ interface PlatformInterfaceWrapper : PlatformInterface {
     ): ConnectionOwner {
         try {
             val uid =
-                Application.connectivity.getConnectionOwnerUid(
+                WdttApplication.connectivity.getConnectionOwnerUid(
                     ipProtocol,
                     InetSocketAddress(sourceAddress, sourcePort),
                     InetSocketAddress(destinationAddress, destinationPort),
@@ -63,7 +63,7 @@ interface PlatformInterfaceWrapper : PlatformInterface {
             val owner = ConnectionOwner()
             owner.userId = uid
             if (uid!=Process.INVALID_UID) {
-                val packages = Application.packageManager.getPackagesForUid(uid)
+                val packages = WdttApplication.packageManager.getPackagesForUid(uid)
                 owner.userName = packages?.firstOrNull() ?: ""
                 owner.androidPackageName = owner.userName
             }
@@ -84,14 +84,14 @@ interface PlatformInterfaceWrapper : PlatformInterface {
     }
 
     override fun getInterfaces(): NetworkInterfaceIterator {
-        val networks = Application.connectivity.allNetworks
+        val networks = WdttApplication.connectivity.allNetworks
         val networkInterfaces = NetworkInterface.getNetworkInterfaces().toList()
         val interfaces = mutableListOf<LibboxNetworkInterface>()
         for (network in networks) {
             val boxInterface = LibboxNetworkInterface()
-            val linkProperties = Application.connectivity.getLinkProperties(network) ?: continue
+            val linkProperties = WdttApplication.connectivity.getLinkProperties(network) ?: continue
             val networkCapabilities =
-                Application.connectivity.getNetworkCapabilities(network) ?: continue
+                WdttApplication.connectivity.getNetworkCapabilities(network) ?: continue
             boxInterface.name = linkProperties.interfaceName
             val networkInterface =
                 networkInterfaces.find { it.name == boxInterface.name } ?: continue
@@ -150,7 +150,7 @@ interface PlatformInterfaceWrapper : PlatformInterface {
     override fun readWIFIState(): WIFIState? {
         @Suppress("DEPRECATION")
         val wifiInfo =
-            Application.wifiManager.connectionInfo ?: return null
+            WdttApplication.wifiManager.connectionInfo ?: return null
         var ssid = wifiInfo.ssid
         if (ssid == "<unknown ssid>") {
             return WIFIState("", "")

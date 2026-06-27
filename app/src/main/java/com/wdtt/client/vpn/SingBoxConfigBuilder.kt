@@ -1,5 +1,6 @@
 package com.wdtt.client.vpn
 
+import com.wdtt.client.VpnServerTemplate
 import org.json.JSONArray
 import org.json.JSONObject
 
