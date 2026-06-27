@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wdtt.client.BypassServerManager
+import com.wdtt.client.ConnectionCoordinator
 import com.wdtt.client.SettingsStore
 import com.wdtt.client.TunnelManager
 import com.wdtt.client.TunnelService
@@ -63,10 +64,6 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private const val WORKERS_PER_GROUP = 12
-/** Высота одной строки сервера — фиксированная, чтобы список не разъезжался. */
-private const val SERVER_ROW_HEIGHT = 48
-/** «Подглядывание» третьего сервера — намёк, что список листается. */
-private const val SERVER_LIST_PEEK = 18
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -201,29 +198,31 @@ fun BypassTabContent(
             Toast.makeText(context, "Выберите сервер", Toast.LENGTH_SHORT).show()
             return
         }
-        val peer = server.host
         saveJob?.cancel()
         scope.launch {
-            settingsStore.save(peer, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
+            settingsStore.save(server.host, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
             settingsStore.saveConnectionPassword(connectionPassword)
             settingsStore.saveCaptchaMode("rjs")
             settingsStore.saveCaptchaSolveMethod("auto")
+
+            ConnectionCoordinator.prepareForBypass(context)
+
+            val intent = Intent(context, TunnelService::class.java).apply {
+                action = "START"
+                putExtra("peer", server.peer)
+                putExtra("vk_hashes", vkHash)
+                putExtra("secondary_vk_hash", "")
+                putExtra("workers_per_hash", currentWorkers.toInt())
+                putExtra("port", 9000)
+                putExtra("sni", "")
+                putExtra("connection_password", connectionPassword)
+                putExtra("protocol", "udp")
+                putExtra("captcha_mode", "rjs")
+                putExtra("captcha_solve_method", "auto")
+            }
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
+            else context.startService(intent)
         }
-        val intent = Intent(context, TunnelService::class.java).apply {
-            action = "START"
-            putExtra("peer", server.peer)
-            putExtra("vk_hashes", vkHash)
-            putExtra("secondary_vk_hash", "")
-            putExtra("workers_per_hash", currentWorkers.toInt())
-            putExtra("port", 9000)
-            putExtra("sni", "")
-            putExtra("connection_password", connectionPassword)
-            putExtra("protocol", "udp")
-            putExtra("captcha_mode", "rjs")
-            putExtra("captcha_solve_method", "auto")
-        }
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
-        else context.startService(intent)
     }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
@@ -334,7 +333,7 @@ fun BypassTabContent(
         StatusBanner(status = subStatus, daysLeft = subDaysLeft)
 
         // ── Статус орб ──────────────────────────────────────────────
-        BypassStatusOrb(running = tunnelRunning, tunnelReady = tunnelReady)
+        ConnectionStatusOrb(running = tunnelRunning, ready = tunnelReady)
 
         // ── Выбор сервера ───────────────────────────────────────────
         AppSectionCard(contentPadding = PaddingValues(0.dp)) {
@@ -357,10 +356,11 @@ fun BypassTabContent(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
                     )
                 } else {
-                    BypassServerList(
-                        servers = bypassServers,
+                    ConnectionServerList(
+                        serverNames = bypassServers.map { it.name },
                         selectedIndex = selectedServer,
                         disabled = tunnelRunning,
+                        visibleRows = SERVER_LIST_BYPASS_VISIBLE_ROWS,
                         onSelect = { index ->
                             selectedServer = index
                             scope.launch { settingsStore.saveBypassServerIndex(index) }
@@ -475,126 +475,6 @@ fun BypassTabContent(
     }
 }
 
-// ═══ Строка выбора сервера ═══
-@Composable
-private fun BypassServerList(
-    servers: List<com.wdtt.client.BypassServer>,
-    selectedIndex: Int,
-    disabled: Boolean,
-    onSelect: (Int) -> Unit
-) {
-    val scrollState = rememberScrollState()
-    val canScrollDown by remember { derivedStateOf { scrollState.canScrollForward } }
-    val canScrollUp by remember { derivedStateOf { scrollState.canScrollBackward } }
-    val rowHeight = SERVER_ROW_HEIGHT.dp
-    val peek = SERVER_LIST_PEEK.dp
-    val listHeight = when {
-        servers.size <= 1 -> rowHeight * servers.size.coerceAtLeast(1)
-        servers.size == 2 -> rowHeight * 2
-        else -> rowHeight * 2 + peek
-    }
-    val cardColor = MaterialTheme.colorScheme.surface
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(listHeight)
-            .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(scrollState)
-        ) {
-            servers.forEachIndexed { index, server ->
-                if (index > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
-                BypassServerRow(
-                    name = server.name,
-                    selected = selectedIndex == index,
-                    disabled = disabled,
-                    onTap = { onSelect(index) }
-                )
-            }
-        }
-
-        if (servers.size > 2 && canScrollUp) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .height(20.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            0f to cardColor,
-                            1f to Color.Transparent
-                        )
-                    )
-            )
-        }
-
-        if (servers.size > 2 && canScrollDown) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(28.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            0f to Color.Transparent,
-                            0.55f to cardColor.copy(alpha = 0.85f),
-                            1f to cardColor
-                        )
-                    )
-            )
-            Text(
-                "↓ листайте",
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 4.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun BypassServerRow(name: String, selected: Boolean, disabled: Boolean, onTap: () -> Unit) {
-    val flag = name.split(" ").firstOrNull() ?: ""
-    val country = name.removePrefix(flag).trim()
-    Surface(
-        onClick = { if (!disabled) onTap() },
-        enabled = !disabled,
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else androidx.compose.ui.graphics.Color.Transparent,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(SERVER_ROW_HEIGHT.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Text(flag, fontSize = 26.sp)
-            Text(
-                country,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                ),
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f)
-            )
-            if (selected) {
-                Icon(Icons.Default.Check, contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp))
-            }
-        }
-    }
-}
-
 // ═══ Диалог подписки (используется в SettingsTab и VpnTab) ═══
 @Composable
 internal fun BypassSubscriptionDialog(
@@ -662,83 +542,6 @@ internal fun BypassSubscriptionDialog(
                     } else {
                         Text("Применить", fontWeight = FontWeight.SemiBold)
                     }
-                }
-            }
-        }
-    }
-}
-
-// ═══ Анимированный текст "Подключение..." под орбом ═══
-@Composable
-private fun ConnectingDotsText() {
-    val anim = rememberInfiniteTransition(label = "connecting_dots")
-    val dotFrame by anim.animateFloat(
-        initialValue = 0f, targetValue = 4f,
-        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), RepeatMode.Restart),
-        label = "dots_frame"
-    )
-    val dots = when (dotFrame.toInt()) { 0 -> ""; 1 -> "."; 2 -> ".."; else -> "..." }
-    Text(
-        text = "Подключение$dots",
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-    )
-}
-
-// ═══ Статус орб для Обход Б/С ═══
-@Composable
-private fun BypassStatusOrb(running: Boolean, tunnelReady: Boolean) {
-    val colors = MaterialTheme.colorScheme
-    val isConnected = running && tunnelReady
-
-    // Пульс только когда подключено
-    val pulseAnim = rememberInfiniteTransition(label = "bypass_pulse")
-    val pulse by pulseAnim.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "bypass_pulse_scale"
-    )
-
-    val orbColor by animateColorAsState(
-        targetValue = if (isConnected) colors.primary else colors.surfaceVariant,
-        animationSpec = tween(600), label = "bypass_orb_color"
-    )
-    val textColor by animateColorAsState(
-        targetValue = if (isConnected) colors.onPrimary else colors.onSurfaceVariant,
-        animationSpec = tween(600), label = "bypass_text_color"
-    )
-
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Box(
-            modifier = Modifier
-                .size(110.dp)
-                .scale(if (isConnected) pulse else 1f)
-                .clip(CircleShape)
-                .background(orbColor.copy(alpha = 0.15f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(82.dp)
-                    .clip(CircleShape)
-                    .background(orbColor.copy(alpha = 0.25f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(58.dp)
-                        .clip(CircleShape)
-                        .background(orbColor),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (isConnected) "ON" else "OFF",
-                        color = textColor,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 18.sp
-                    )
                 }
             }
         }

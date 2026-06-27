@@ -1,28 +1,30 @@
 package com.wdtt.client
 
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.provider.Settings
+import android.util.Log
+import androidx.annotation.RequiresApi
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service
-import android.content.Context
-import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
-import android.os.Build
-import android.os.ParcelFileDescriptor
 import android.os.StrictMode
-import android.provider.Settings
-import android.util.Log
-import androidx.annotation.RequiresApi
+import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import go.Seq
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
-import java.lang.ref.SoftReference
 import java.util.concurrent.atomic.AtomicBoolean
 
 class XrayVpnService : VpnService() {
@@ -31,23 +33,24 @@ class XrayVpnService : VpnService() {
         private const val TAG = "XrayVpnService"
         private const val NOTIF_CHANNEL = "bypassme_xray_vpn"
         private const val NOTIF_ID = 1002
+        private const val VPN_ADDRESS = "10.10.0.2"
+        private const val VPN_PREFIX = 30
 
         const val ACTION_START = "START_XRAY"
         const val ACTION_STOP  = "STOP_XRAY"
-        const val EXTRA_CONFIG = "xray_config_json"
+        const val EXTRA_SERVER_ID = "server_id"
 
-        // Broadcasts для связи с главным процессом (сервис в :xray_daemon процессе)
         const val BROADCAST_RUNNING = "com.bypassme.VPN_RUNNING"
         const val BROADCAST_STOPPED = "com.bypassme.VPN_STOPPED"
         const val BROADCAST_ERROR   = "com.bypassme.VPN_ERROR"
         const val EXTRA_ERROR_MSG   = "error_msg"
-        private const val PKG       = "com.bypassme.app"
+        private const val PKG = "com.bypassme.app"
 
-        fun start(context: Context, configJson: String) {
+        fun start(context: Context, serverId: String) {
             context.startForegroundService(
                 Intent(context, XrayVpnService::class.java).apply {
                     action = ACTION_START
-                    putExtra(EXTRA_CONFIG, configJson)
+                    putExtra(EXTRA_SERVER_ID, serverId)
                 }
             )
         }
@@ -58,17 +61,16 @@ class XrayVpnService : VpnService() {
             )
         }
 
-        // Инициализация libv2ray — один раз (AtomicBoolean как в CoreNativeManager v2rayNG)
         private val coreInitialized = AtomicBoolean(false)
 
         private fun initCoreEnv(context: Context) {
             if (coreInitialized.compareAndSet(false, true)) {
                 try {
                     Seq.setContext(context.applicationContext)
+                    copyAssetIfNeeded(context, "geoip.db")
                     val rawId = try {
                         Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
                     } catch (_: Exception) { "" }
-                    // xray XUDP BaseKey должен быть ровно 32 байта — padEnd до 32 символов
                     val deviceId = rawId.padEnd(32, '0').substring(0, 32)
                     Libv2ray.initCoreEnv(context.filesDir.absolutePath, deviceId)
                     Log.i(TAG, "libv2ray initialized")
@@ -79,11 +81,24 @@ class XrayVpnService : VpnService() {
                 }
             }
         }
+
+        private fun copyAssetIfNeeded(context: Context, name: String) {
+            val target = java.io.File(context.filesDir, name)
+            if (target.exists() && target.length() > 0) return
+            try {
+                context.assets.open(name).use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "asset copy skipped ($name): ${e.message}")
+            }
+        }
     }
 
     private lateinit var vpnInterface: ParcelFileDescriptor
     private var isRunning = false
     private var coreController: CoreController? = null
+    private var hevTun2Socks: HevTun2Socks? = null
 
     private val coreCallback = object : CoreCallbackHandler {
         override fun startup(): Long = 0
@@ -122,10 +137,10 @@ class XrayVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_START -> {
-                val config = intent.getStringExtra(EXTRA_CONFIG) ?: return START_NOT_STICKY
+                val serverId = intent.getStringExtra(EXTRA_SERVER_ID) ?: return START_NOT_STICKY
                 showNotification()
-                if (isRunning) stopCore()
-                setupAndStart(config)
+                if (isRunning) stopAll()
+                setupAndStart(serverId)
                 START_STICKY
             }
             ACTION_STOP -> {
@@ -136,27 +151,54 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    private fun setupAndStart(configJson: String) {
-        val prepare = prepare(this)
-        if (prepare != null) { stopSelf(); return }
+    private fun setupAndStart(serverId: String) {
+        if (prepare(this) != null) {
+            fail("VPN-разрешение не выдано")
+            return
+        }
 
-        if (!configureVpn()) { stopSelf(); return }
+        val configJson = runBlocking { buildConfigJson(serverId) }
+        if (configJson == null) {
+            fail("Не удалось собрать конфиг VPN")
+            return
+        }
 
-        // Прямой TUN режим: передаём реальный tunFd в xray
-        // xray читает пакеты из TUN интерфейса напрямую (без hev-socks5-tunnel)
+        if (!configureVpn()) {
+            fail("Не удалось создать VPN-интерфейс")
+            return
+        }
+
         startXrayCore(configJson)
+    }
+
+    private suspend fun buildConfigJson(serverId: String): String? {
+        val store = SettingsStore(this)
+        val uuid = store.vpnUuid.first().trim()
+        if (uuid.isEmpty()) return null
+
+        VpnServerManager.loadCached(this)
+        var list = VpnServerManager.servers.value
+        if (list.isEmpty()) {
+            VpnServerManager.fetchServers(this)
+            list = VpnServerManager.servers.value
+        }
+        val server = list.firstOrNull { it.id == serverId } ?: list.firstOrNull() ?: return null
+        return XrayConfigBuilder.build(server, uuid)
     }
 
     private fun configureVpn(): Boolean {
         return try {
             val builder = Builder()
             builder.setMtu(1500)
-            builder.addAddress("10.10.0.1", 30)
+            builder.addAddress(VPN_ADDRESS, VPN_PREFIX)
             builder.addRoute("0.0.0.0", 0)
+            // Только IPv4 — иначе Telegram/YouTube могут уйти мимо туннеля по IPv6
+            builder.allowFamily(OsConstants.AF_INET)
             builder.addDnsServer("1.1.1.1")
-            builder.addDnsServer("8.8.8.8")
+            builder.addDnsServer("1.0.0.1")
             try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
             builder.setSession("ByPassMe VPN")
+            builder.setBlocking(true)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 try { connectivity.requestNetwork(defaultNetworkRequest, defaultNetworkCallback) }
@@ -175,34 +217,38 @@ class XrayVpnService : VpnService() {
         }
     }
 
+    /**
+     * v2rayNG / INCY схема: xray слушает SOCKS, hev-socks5-tunnel мостит TUN → SOCKS.
+     */
     private fun startXrayCore(configJson: String) {
         try {
             initCoreEnv(this)
 
-            // Защита сокетов от VPN петли
             Libv2ray.useProtector(object : libv2ray.V2RayProtector {
-                override fun protect(fd: Long): Boolean =
-                    this@XrayVpnService.protect(fd.toInt())
+                override fun protect(fd: Long): Boolean = protect(fd.toInt())
             })
 
             val ctrl = Libv2ray.newCoreController(coreCallback)
             coreController = ctrl
-            ctrl.startLoop(configJson, vpnInterface.fd)
-            if (ctrl.isRunning) {
-                sendBroadcast(Intent(BROADCAST_RUNNING).setPackage(PKG))
-                Log.i(TAG, "xray started ok")
-            } else {
-                val msg = "xray не запустился после startLoop"
-                Log.e(TAG, msg)
-                sendBroadcast(Intent(BROADCAST_ERROR).setPackage(PKG).putExtra(EXTRA_ERROR_MSG, msg))
-                stopAll()
+            ctrl.startLoop(configJson, 0)
+
+            if (!ctrl.isRunning) {
+                fail("xray не запустился")
+                return
             }
+
+            hevTun2Socks = HevTun2Socks(this, vpnInterface).also { it.start() }
+            sendBroadcast(Intent(BROADCAST_RUNNING).setPackage(PKG))
+            Log.i(TAG, "VPN tunnel started (hev-socks5 + xray)")
         } catch (e: Exception) {
-            val msg = "xray ошибка: ${e.message}"
-            Log.e(TAG, msg, e)
-            sendBroadcast(Intent(BROADCAST_ERROR).setPackage(PKG).putExtra(EXTRA_ERROR_MSG, msg))
-            stopAll()
+            fail("xray ошибка: ${e.message}")
         }
+    }
+
+    private fun fail(msg: String) {
+        Log.e(TAG, msg)
+        sendBroadcast(Intent(BROADCAST_ERROR).setPackage(PKG).putExtra(EXTRA_ERROR_MSG, msg))
+        stopAll()
     }
 
     private fun stopCore() {
@@ -212,6 +258,9 @@ class XrayVpnService : VpnService() {
 
     private fun stopAll() {
         isRunning = false
+
+        try { hevTun2Socks?.stop() } catch (_: Exception) {}
+        hevTun2Socks = null
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try { connectivity.unregisterNetworkCallback(defaultNetworkCallback) } catch (_: Exception) {}
@@ -230,7 +279,6 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    // 2 параметра — точно как v2rayNG NotificationManager.showNotification()
     private fun showNotification() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

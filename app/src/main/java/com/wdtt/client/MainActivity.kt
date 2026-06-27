@@ -35,7 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.*
@@ -64,6 +64,7 @@ import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.first
 import com.wdtt.client.XrayManager
 import com.wdtt.client.BypassServerManager
+import com.wdtt.client.VpnServerManager
 import com.wdtt.client.ui.AppLogsTab
 import com.wdtt.client.ui.FloatingToolbar
 import com.wdtt.client.ui.SettingsTab
@@ -128,36 +129,33 @@ class MainActivity : ComponentActivity() {
                 SubscriptionChecker.loadCached(appContext)
                 XrayManager.loadCached(appContext)
                 BypassServerManager.loadCached(appContext)
+                VpnServerManager.loadCached(appContext)
                 SubscriptionChecker.refreshInBackground(appContext, scope)
                 BypassServerManager.refreshInBackground(appContext, scope)
+                VpnServerManager.refreshInBackground(appContext, scope)
             }
 
             // После ввода подписки — автоматически загружаем список серверов
             LaunchedEffect(savedUuid) {
                 if (savedUuid.isBlank()) return@LaunchedEffect
                 BypassServerManager.loadCached(appContext)
+                VpnServerManager.loadCached(appContext)
                 if (BypassServerManager.servers.value.isEmpty()) {
                     BypassServerManager.fetchServers(appContext)
                 }
-            }
-
-            // Автоотзыв: если device_blocked → рефреш очистит uuid автоматически
-            // Следим за статусом и если истекла → очищаем
-            val subStatus by SubscriptionChecker.status.collectAsStateWithLifecycle()
-            LaunchedEffect(subStatus) {
-                if (subStatus == "expired" && savedUuid.isNotBlank()) {
-                    SubscriptionChecker.revokeAccess(appContext, "expired")
+                if (VpnServerManager.servers.value.isEmpty()) {
+                    VpnServerManager.fetchServers(appContext)
                 }
             }
 
-            // Опрос каждые 5 секунд — удаление устройства в боте → онбординг + стоп VPN
+            // Опрос каждые 5 секунд — удаление устройства / истечение подписки → стоп VPN + обход + онбординг
             LaunchedEffect(Unit) {
                 while (true) {
+                    kotlinx.coroutines.delay(5_000)
                     val url = settingsStore.vpnSubscriptionUrl.first()
                     if (url.isNotEmpty()) {
-                        SubscriptionChecker.refreshInBackground(appContext, this)
+                        SubscriptionChecker.refreshSubscription(appContext)
                     }
-                    kotlinx.coroutines.delay(5_000)
                 }
             }
 
@@ -345,6 +343,7 @@ private fun OnboardingScreen(settingsStore: SettingsStore, context: android.cont
                         when (val result = SubscriptionChecker.fetch(context, inputText.trim(), reconnect = true)) {
                             is SubscriptionChecker.Result.Success -> {
                                 BypassServerManager.fetchServers(context)
+                                VpnServerManager.fetchServers(context)
                                 isLoading = false
                             }
                             is SubscriptionChecker.Result.DeviceLimitExceeded -> {
@@ -396,6 +395,7 @@ private data class NavItem(
 )
 
 private val navItems = listOf(
+    NavItem("VPN", Icons.Filled.Lock, Icons.Outlined.Lock),
     NavItem("Обход Б/С", Icons.Filled.Shield, Icons.Outlined.Shield),
     NavItem("Логи", Icons.Filled.Terminal, Icons.Outlined.Terminal),
 )
@@ -482,8 +482,9 @@ fun MainScreen(
                     label = "tab_content"
                 ) { tab ->
                     when (tab) {
-                        0 -> SettingsTab()
-                        1 -> AppLogsTab()
+                        0 -> VpnTab()
+                        1 -> SettingsTab()
+                        2 -> AppLogsTab()
                     }
                 }
 

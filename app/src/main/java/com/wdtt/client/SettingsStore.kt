@@ -419,6 +419,7 @@ class SettingsStore(context: Context) {
             prefs.remove(VPN_SUBSCRIPTION_URL)
             prefs.remove(VPN_SUB_KEY)
             prefs.remove(BYPASS_SERVERS_JSON)
+            prefs.remove(VPN_SERVERS_JSON)
             prefs.remove(VPN_EXPIRE_AT)
             prefs[VPN_DAYS_LEFT] = 0
             prefs[VPN_STATUS_STRING] = "unknown"

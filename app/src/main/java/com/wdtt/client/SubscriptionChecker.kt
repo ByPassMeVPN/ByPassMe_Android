@@ -4,10 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -21,7 +21,7 @@ import java.net.URL
  * Headers: X-HWID: {android_id}, X-Device-Name: {Make Model (Android X)}
  *
  * 200 → {"type":"combo","days_left":30,"uuid":"...","wdtt_password":"..."}
- * 403 → {"error":"device_limit"} или {"error":"device_blocked"}
+ * 403 → {"error":"device_limit"} | device_blocked | device_removed
  * 404 → подписка не найдена
  */
 object SubscriptionChecker {
@@ -34,10 +34,11 @@ object SubscriptionChecker {
     val daysLeft = MutableStateFlow(0)
 
     sealed class Result {
-        object Success                    : Result()
-        object DeviceLimitExceeded        : Result()
-        object DeviceBlocked              : Result()
-        object DeviceRemoved              : Result()
+        object Success       : Result()
+        object Revoked       : Result()
+        object DeviceLimitExceeded : Result()
+        object DeviceBlocked : Result()
+        object DeviceRemoved : Result()
         data class Error(val msg: String) : Result()
     }
 
@@ -60,9 +61,9 @@ object SubscriptionChecker {
             val metaUrl = "$base/meta/$subKey"
             try {
                 val conn = URL(metaUrl).openConnection() as HttpURLConnection
-                conn.setRequestProperty("X-HWID",        androidId)
+                conn.setRequestProperty("X-HWID", androidId)
                 conn.setRequestProperty("X-Device-Name", deviceName)
-                conn.setRequestProperty("User-Agent",    "ByPassMe/2.0 Android/${Build.VERSION.RELEASE}")
+                conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android/${Build.VERSION.RELEASE}")
                 if (reconnect) {
                     conn.setRequestProperty("X-Device-Reconnect", "1")
                 }
@@ -79,7 +80,7 @@ object SubscriptionChecker {
                     code == 403 -> {
                         val error = runCatching { JSONObject(body).optString("error", "") }.getOrDefault("")
                         return@withContext when (error) {
-                            "device_limit"   -> Result.DeviceLimitExceeded
+                            "device_limit" -> Result.DeviceLimitExceeded
                             "device_blocked" -> {
                                 revokeAccess(context, "blocked")
                                 Result.DeviceBlocked
@@ -91,11 +92,14 @@ object SubscriptionChecker {
                             else -> Result.Error("Ошибка доступа (403)")
                         }
                     }
-                    code == 404 -> return@withContext Result.Error("Подписка не найдена. Проверьте ключ.")
+                    code == 404 -> {
+                        revokeAccess(context, "expired")
+                        Result.Revoked
+                    }
                     code == 200 && body.isNotEmpty() -> return@withContext parseAndSave(context, url, body)
                     else -> lastError = "Ошибка сервера: $code"
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 lastError = "Нет связи с сервером"
             }
         }
@@ -116,9 +120,12 @@ object SubscriptionChecker {
                 else                            -> "active"
             }
 
-            val expireAt = if (daysL > 0)
-                System.currentTimeMillis() + daysL * 86_400_000L
-            else 0L
+            if (newStatus == "expired") {
+                revokeAccess(context, "expired")
+                return Result.Revoked
+            }
+
+            val expireAt = System.currentTimeMillis() + daysL * 86_400_000L
 
             val store = SettingsStore(context)
             store.saveVpnCredentialsFull(
@@ -145,6 +152,9 @@ object SubscriptionChecker {
     /** Загрузить кеш с DataStore моментально (без сети) */
     suspend fun loadCached(context: Context) {
         val store    = SettingsStore(context)
+        val uuid     = store.vpnUuid.first()
+        if (uuid.isBlank()) return
+
         val expireAt = store.vpnExpireAt.first()
         val cached   = store.vpnStatusString.first()
         val days     = store.vpnDaysLeft.first()
@@ -152,36 +162,57 @@ object SubscriptionChecker {
         if (expireAt > 0L) {
             val computed = ((expireAt - System.currentTimeMillis()) / 86_400_000L).toInt().coerceAtLeast(0)
             daysLeft.value = computed
-            status.value   = if (computed == 0 && cached == "active") "expired" else cached
+            if (computed == 0 && cached == "active") {
+                revokeAccess(context, "expired")
+                return
+            }
+            status.value = cached
         } else {
             status.value   = cached
             daysLeft.value = days
+            if (cached == "expired") {
+                revokeAccess(context, "expired")
+            }
         }
     }
 
-    /** Полный отзыв: DataStore, кэш серверов, остановка туннеля. */
+    /**
+     * Полный отзыв: стоп обхода + VPN, очистка подписки, возврат на онбординг.
+     */
     suspend fun revokeAccess(context: Context, reason: String) {
+        stopAllTunnels(context)
         SettingsStore(context).revokeVpnAccess(reason)
         BypassServerManager.clear()
-        status.value = "unknown"
-        daysLeft.value = 0
+        VpnServerManager.clear()
+        resetRuntimeState()
+    }
+
+    private fun stopAllTunnels(context: Context) {
+        XrayVpnService.stop(context)
         context.startService(
             Intent(context, TunnelService::class.java).apply { action = "STOP" }
         )
+        XrayManager.running.value = false
+        TunnelManager.running.value = false
+        TunnelManager.tunnelReady.value = false
     }
 
-    /** Фоновый refresh при каждом запуске */
+    private fun resetRuntimeState() {
+        status.value = "unknown"
+        daysLeft.value = 0
+        XrayManager.running.value = false
+        XrayManager.lastError.value = ""
+    }
+
+    /** Фоновая проверка подписки (каждые 5 сек из MainActivity). */
+    suspend fun refreshSubscription(context: Context) {
+        val url = SettingsStore(context).vpnSubscriptionUrl.first()
+        if (url.isEmpty()) return
+        fetch(context, url)
+    }
+
     fun refreshInBackground(context: Context, scope: CoroutineScope) {
-        scope.launch {
-            val url = SettingsStore(context).vpnSubscriptionUrl.first()
-            if (url.isEmpty()) return@launch
-            when (fetch(context, url)) {
-                // device_blocked / device_removed → revokeAccess уже внутри fetch()
-                is Result.DeviceLimitExceeded -> revokeAccess(context, "blocked")
-                // Сетевые ошибки — uuid и кэш остаются для офлайн-работы
-                else -> {}
-            }
-        }
+        scope.launch { refreshSubscription(context) }
     }
 }
 

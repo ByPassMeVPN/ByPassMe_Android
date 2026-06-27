@@ -14,7 +14,7 @@ class HevTun2Socks(
 ) {
     companion object {
         private const val SOCKS_PORT = 10808
-        private const val VPN_ADDRESS = "10.10.0.1"
+        private const val VPN_ADDRESS = "10.10.0.2"
         private const val MTU = 1500
 
         @JvmStatic

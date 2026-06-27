@@ -81,7 +81,10 @@ class TunnelService : Service() {
                     captchaMode = sanitizeCaptchaMode(intent.getStringExtra("captcha_mode")),
                     captchaSolveMethod = intent.getStringExtra("captcha_solve_method") ?: "auto"
                 )
-                startTunnel(params)
+                TunnelManager.scope.launch {
+                    ConnectionCoordinator.prepareForBypass(applicationContext)
+                    startTunnel(params)
+                }
             }
             "STOP" -> stopTunnel()
             "DEPLOY_START" -> {
@@ -106,9 +109,14 @@ class TunnelService : Service() {
     }
 
     private fun restoreTunnel() {
+        if (XrayManager.running.value) {
+            stopSelf()
+            return
+        }
+
         val notification = createNotification("Восстановление соединения...")
         startPersistentForeground(notification)
-        
+
         val appContext = applicationContext
         TunnelManager.scope.launch {
             try {
@@ -129,18 +137,13 @@ class TunnelService : Service() {
                     captchaSolveMethod = store.captchaSolveMethod.first()
                 )
                 if (params.peer.isNotEmpty() && params.vkHashes.isNotEmpty()) {
-                    launch(Dispatchers.Main) {
-                        startTunnel(params)
-                    }
+                    ConnectionCoordinator.prepareForBypass(appContext)
+                    launch(Dispatchers.Main) { startTunnel(params) }
                 } else {
-                    launch(Dispatchers.Main) {
-                        stopTunnel()
-                    }
+                    launch(Dispatchers.Main) { stopTunnel() }
                 }
-            } catch (e: Exception) {
-                launch(Dispatchers.Main) {
-                    stopTunnel()
-                }
+            } catch (_: Exception) {
+                launch(Dispatchers.Main) { stopTunnel() }
             }
         }
     }
