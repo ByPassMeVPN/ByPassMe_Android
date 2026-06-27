@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import com.wdtt.client.vpn.SingBoxConfigBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,31 +30,31 @@ object XrayManager {
         receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
-                    XrayVpnService.BROADCAST_RUNNING -> {
+                    SingBoxVpnService.BROADCAST_RUNNING -> {
                         cancelConnectTimeout()
                         running.value = true
                         connecting.value = false
                         lastError.value = ""
                     }
-                    XrayVpnService.BROADCAST_STOPPED -> {
+                    SingBoxVpnService.BROADCAST_STOPPED -> {
                         cancelConnectTimeout()
                         running.value = false
                         connecting.value = false
                     }
-                    XrayVpnService.BROADCAST_ERROR -> {
+                    SingBoxVpnService.BROADCAST_ERROR -> {
                         cancelConnectTimeout()
                         running.value = false
                         connecting.value = false
-                        lastError.value = intent.getStringExtra(XrayVpnService.EXTRA_ERROR_MSG)
+                        lastError.value = intent.getStringExtra(SingBoxVpnService.EXTRA_ERROR_MSG)
                             ?: "Неизвестная ошибка"
                     }
                 }
             }
         }
         val filter = IntentFilter().apply {
-            addAction(XrayVpnService.BROADCAST_RUNNING)
-            addAction(XrayVpnService.BROADCAST_STOPPED)
-            addAction(XrayVpnService.BROADCAST_ERROR)
+            addAction(SingBoxVpnService.BROADCAST_RUNNING)
+            addAction(SingBoxVpnService.BROADCAST_STOPPED)
+            addAction(SingBoxVpnService.BROADCAST_ERROR)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             appCtx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -102,12 +103,12 @@ object XrayManager {
         SettingsStore(context).saveVpnServerIndex(idx)
 
         val server = list[idx]
-        val configJson = XrayConfigBuilder.build(server, uuid)
+        val configJson = SingBoxConfigBuilder.build(server, uuid)
 
         connecting.value = true
         scheduleConnectTimeout(context)
         ConnectionCoordinator.prepareForVpn(context)
-        XrayVpnService.start(context, server.id, configJson)
+        SingBoxVpnService.start(context, configJson)
     }
 
     suspend fun stopVpn(context: Context) {
@@ -116,7 +117,6 @@ object XrayManager {
         ConnectionCoordinator.stopVpn(context)
     }
 
-    /** Переподключение на другой сервер без cooldown (VPN уже активен). */
     suspend fun switchServer(context: Context, serverIndex: Int) {
         val list = VpnServerManager.servers.value
         if (serverIndex !in list.indices) return
@@ -135,19 +135,18 @@ object XrayManager {
         connecting.value = true
         scheduleConnectTimeout(context)
         val server = list[serverIndex]
-        val configJson = XrayConfigBuilder.build(server, uuid)
-        XrayVpnService.start(context, server.id, configJson)
+        val configJson = SingBoxConfigBuilder.build(server, uuid)
+        SingBoxVpnService.start(context, configJson)
     }
 
     private fun scheduleConnectTimeout(context: Context) {
         cancelConnectTimeout()
-        val scope = CoroutineScope(Dispatchers.Main)
-        connectTimeoutJob = scope.launch {
+        connectTimeoutJob = CoroutineScope(Dispatchers.Main).launch {
             delay(25_000)
             if (connecting.value && !running.value) {
                 connecting.value = false
                 lastError.value = "Таймаут подключения VPN"
-                XrayVpnService.stop(context.applicationContext)
+                SingBoxVpnService.stop(context.applicationContext)
             }
         }
     }

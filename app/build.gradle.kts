@@ -22,8 +22,10 @@ android {
         applicationId = "com.bypassme.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 21
-        versionName = "1.2.1"
+        versionCode = 22
+        versionName = "1.3.0"
+
+        multiDexEnabled = true
 
         buildConfigField("String", "HUB_MOS_TOKEN", "\"$hubMosToken\"")
 
@@ -124,6 +126,10 @@ android {
 
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    implementation("androidx.multidex:multidex:2.0.1")
+    implementation("io.grpc:grpc-okhttp:1.64.0")
+    implementation("io.grpc:grpc-protobuf-lite:1.64.0")
+    implementation("io.grpc:grpc-stub:1.64.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")

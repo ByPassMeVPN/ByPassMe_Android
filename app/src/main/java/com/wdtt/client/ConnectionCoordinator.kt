@@ -28,7 +28,7 @@ object ConnectionCoordinator {
     suspend fun stopVpn(context: Context) {
         if (!XrayManager.running.value) return
 
-        XrayVpnService.stop(context)
+        SingBoxVpnService.stop(context)
         waitUntil(STOP_TIMEOUT_MS) { !XrayManager.running.value }
     }
 
