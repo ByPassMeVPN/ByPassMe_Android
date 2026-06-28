@@ -12,6 +12,7 @@ import com.wireguard.config.Peer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -209,6 +210,25 @@ class WireGuardHelper(context: Context) {
                 Log.e("WG", "Failed to stop WireGuard: ${e.readableMessage()}")
             }
         }
+        delay(400)
+    }
+
+    /** Полностью освобождает VPN-слот WireGuard перед запуском Xray VPN. */
+    suspend fun releaseVpnCompletely() {
+        stopTunnel()
+        stopGoBackendService()
+        delay(500)
+    }
+
+    private suspend fun stopGoBackendService() {
+        withContext(Dispatchers.Main) {
+            runCatching {
+                appContext.stopService(Intent(appContext, GoBackend.VpnService::class.java))
+            }.onFailure {
+                Log.w("WG", "GoBackend stop failed: ${it.readableMessage()}")
+            }
+        }
+        delay(400)
     }
 
     private suspend fun ensureGoBackendServiceStarted() {

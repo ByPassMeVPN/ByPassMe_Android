@@ -163,15 +163,14 @@ class TunnelService : Service() {
 
     private fun stopTunnel() {
         updateJob?.cancel()
-
-        // Уничтожаем текущий WebView (если капча решается) и чистим контекст
         CaptchaWebViewManager.onTunnelStop()
-
-        TunnelManager.stop()
-        releaseWakeLock()
-        releaseWifiLock()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        TunnelManager.scope.launch {
+            TunnelManager.stopAndWait()
+            releaseWakeLock()
+            releaseWifiLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun setupNetworkCallback() {

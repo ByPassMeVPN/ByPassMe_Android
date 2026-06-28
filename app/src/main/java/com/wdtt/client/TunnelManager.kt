@@ -559,26 +559,29 @@ object TunnelManager {
     suspend fun stopAndWait() {
         isCaptchaSolving = false
         tunnelReady.value = false
+        running.value = false
+        watchdogJob?.cancel()
+        readerJob?.cancel()
+
         CaptchaWebViewManager.onTunnelStop()
-        // Сначала останавливаем WireGuard и ждём завершения
+        ManlCaptchaWebViewManager.cancelCaptcha()
+
         withContext(Dispatchers.Main) {
-            wgHelper?.stopTunnel()
+            wgHelper?.releaseVpnCompletely()
         }
         withContext(Dispatchers.IO) {
             killProcess()
-            running.value = false
             activeWorkers.value = 0
             currentParams = null
-            ManlCaptchaWebViewManager.cancelCaptcha()
-            // Ждём освобождения порта 9000 (до 3 секунд)
             repeat(30) {
                 try {
                     java.net.ServerSocket(9000, 1, java.net.InetAddress.getByName("127.0.0.1")).use { it.close() }
-                    return@withContext // Порт свободен!
+                    return@withContext
                 } catch (_: Exception) {
                     delay(100)
                 }
             }
+            delay(500)
         }
     }
 

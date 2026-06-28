@@ -129,7 +129,13 @@ private fun VpnTabContent(
     }
 
     fun startVpnConnection() {
-        scope.launch { XrayManager.startVpn(context) }
+        scope.launch {
+            try {
+                XrayManager.startVpn(context)
+            } catch (e: Exception) {
+                Toast.makeText(context, e.message ?: "Ошибка VPN", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(

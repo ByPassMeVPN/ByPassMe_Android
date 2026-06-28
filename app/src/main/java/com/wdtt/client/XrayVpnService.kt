@@ -21,6 +21,7 @@ import androidx.core.app.NotificationCompat
 import go.Seq
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
@@ -48,6 +49,18 @@ class XrayVpnService : VpnService() {
         const val BROADCAST_ERROR   = "com.bypassme.VPN_ERROR"
         const val EXTRA_ERROR_MSG   = "error_msg"
         private const val PKG = "com.bypassme.app"
+
+        @Volatile
+        var isSessionActive: Boolean = false
+            private set
+
+        /** Ждёт полного освобождения TUN (переключение на Обход Б/С). */
+        suspend fun waitUntilStopped(timeoutMs: Long = 10_000L) {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (isSessionActive && System.currentTimeMillis() < deadline) {
+                kotlinx.coroutines.delay(50)
+            }
+        }
 
         fun start(context: Context, serverId: String, configJson: String) {
             context.startForegroundService(
@@ -267,6 +280,7 @@ class XrayVpnService : VpnService() {
 
             vpnInterface = builder.establish()!!
             isRunning = true
+            isSessionActive = true
             true
         } catch (e: Exception) {
             Log.e(TAG, "configureVpn failed: ${e.message}", e)
@@ -347,6 +361,7 @@ class XrayVpnService : VpnService() {
     /** Остановить туннель, сервис остаётся живым (смена сервера). */
     private fun teardownSession() {
         isRunning = false
+        isSessionActive = false
         try { hevTun2Socks?.stop() } catch (_: Exception) {}
         hevTun2Socks = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

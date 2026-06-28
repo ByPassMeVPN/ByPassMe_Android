@@ -200,14 +200,15 @@ fun BypassTabContent(
         }
         saveJob?.cancel()
         scope.launch {
-            settingsStore.save(server.host, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
-            settingsStore.saveConnectionPassword(connectionPassword)
-            settingsStore.saveCaptchaMode("rjs")
-            settingsStore.saveCaptchaSolveMethod("auto")
+            try {
+                settingsStore.save(server.host, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
+                settingsStore.saveConnectionPassword(connectionPassword)
+                settingsStore.saveCaptchaMode("rjs")
+                settingsStore.saveCaptchaSolveMethod("auto")
 
-            ConnectionCoordinator.prepareForBypass(context)
+                ConnectionCoordinator.prepareForBypass(context)
 
-            val intent = Intent(context, TunnelService::class.java).apply {
+                val intent = Intent(context, TunnelService::class.java).apply {
                 action = "START"
                 putExtra("peer", server.peer)
                 putExtra("vk_hashes", vkHash)
@@ -222,6 +223,13 @@ fun BypassTabContent(
             }
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
             else context.startService(intent)
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(
+                    context,
+                    e.message ?: "Ошибка запуска обхода",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 

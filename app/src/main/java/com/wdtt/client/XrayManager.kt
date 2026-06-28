@@ -86,28 +86,33 @@ object XrayManager {
         result
     }
 
-    suspend fun startVpn(context: Context) {
-        val list = VpnServerManager.servers.value
-        if (list.isEmpty()) {
-            lastError.value = "Список серверов пуст"
-            return
+    suspend fun startVpn(context: Context) = withContext(Dispatchers.IO) {
+        try {
+            val list = VpnServerManager.servers.value
+            if (list.isEmpty()) {
+                lastError.value = "Список серверов пуст"
+                return@withContext
+            }
+            val uuid = SettingsStore(context).vpnUuid.first().trim()
+            if (uuid.isEmpty()) {
+                lastError.value = "UUID подписки не найден"
+                return@withContext
+            }
+
+            val idx = selectedIndex.value.coerceIn(list.indices)
+            SettingsStore(context).saveVpnServerIndex(idx)
+
+            val server = list[idx]
+            val configJson = XrayConfigBuilder.build(server, uuid)
+
+            connecting.value = true
+            scheduleConnectTimeout(context)
+            ConnectionCoordinator.prepareForVpn(context)
+            XrayVpnService.start(context, server.id, configJson)
+        } catch (e: Exception) {
+            connecting.value = false
+            lastError.value = e.message ?: "Ошибка запуска VPN"
         }
-        val uuid = SettingsStore(context).vpnUuid.first().trim()
-        if (uuid.isEmpty()) {
-            lastError.value = "UUID подписки не найден"
-            return
-        }
-
-        val idx = selectedIndex.value.coerceIn(list.indices)
-        SettingsStore(context).saveVpnServerIndex(idx)
-
-        val server = list[idx]
-        val configJson = XrayConfigBuilder.build(server, uuid)
-
-        connecting.value = true
-        scheduleConnectTimeout(context)
-        ConnectionCoordinator.prepareForVpn(context)
-        XrayVpnService.start(context, server.id, configJson)
     }
 
     suspend fun stopVpn(context: Context) {
@@ -116,29 +121,31 @@ object XrayManager {
         ConnectionCoordinator.stopVpn(context)
     }
 
-    suspend fun switchServer(context: Context, serverIndex: Int) {
-        val list = VpnServerManager.servers.value
-        if (serverIndex !in list.indices) return
+    suspend fun switchServer(context: Context, serverIndex: Int) = withContext(Dispatchers.IO) {
+        try {
+            val list = VpnServerManager.servers.value
+            if (serverIndex !in list.indices) return@withContext
 
-        selectedIndex.value = serverIndex
-        SettingsStore(context).saveVpnServerIndex(serverIndex)
+            selectedIndex.value = serverIndex
+            SettingsStore(context).saveVpnServerIndex(serverIndex)
 
-        if (!running.value && !connecting.value) return
+            if (!running.value && !connecting.value) return@withContext
 
-        val uuid = SettingsStore(context).vpnUuid.first().trim()
-        if (uuid.isEmpty()) {
-            lastError.value = "UUID подписки не найден"
-            return
+            val uuid = SettingsStore(context).vpnUuid.first().trim()
+            if (uuid.isEmpty()) {
+                lastError.value = "UUID подписки не найден"
+                return@withContext
+            }
+
+            connecting.value = true
+            scheduleConnectTimeout(context)
+            val server = list[serverIndex]
+            val configJson = XrayConfigBuilder.build(server, uuid)
+            XrayVpnService.restart(context, server.id, configJson)
+        } catch (e: Exception) {
+            connecting.value = false
+            lastError.value = e.message ?: "Ошибка смены сервера"
         }
-
-        connecting.value = true
-        scheduleConnectTimeout(context)
-        val server = list[serverIndex]
-        val configJson = XrayConfigBuilder.build(server, uuid)
-        if (running.value) {
-            ConnectionCoordinator.stopVpn(context)
-        }
-        XrayVpnService.restart(context, server.id, configJson)
     }
 
     private fun scheduleConnectTimeout(context: Context) {
