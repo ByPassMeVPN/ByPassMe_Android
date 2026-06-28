@@ -83,7 +83,9 @@ private fun VpnTabContent(
 
     LaunchedEffect(Unit) {
         val savedIndex = settingsStore.vpnServerIndex.first()
-        VpnServerManager.loadCached(context)
+        if (savedUuid.isNotBlank() && VpnServerManager.servers.value.isEmpty()) {
+            VpnServerManager.fetchServers(context)
+        }
         val list = VpnServerManager.servers.value
         selectedServer = when {
             list.isEmpty() -> savedIndex
@@ -123,7 +125,7 @@ private fun VpnTabContent(
         val msg = when (result) {
             VpnServerManager.FetchResult.Success -> "Список серверов обновлён"
             VpnServerManager.FetchResult.NetworkError ->
-                "Не удалось загрузить с hub.mos.ru · используется кэш"
+                "Не удалось загрузить список серверов"
         }
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }

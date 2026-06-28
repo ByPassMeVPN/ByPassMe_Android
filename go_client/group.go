@@ -15,7 +15,7 @@ import (
 var groupAuthMutex sync.Mutex
 
 const (
-	workersPerGroup  = 12
+	workersPerGroup  = 9
 	defaultCycleSecs = 36000
 )
 

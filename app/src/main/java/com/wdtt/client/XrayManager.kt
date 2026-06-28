@@ -62,8 +62,7 @@ object XrayManager {
         }
     }
 
-    suspend fun loadCached(context: Context) {
-        VpnServerManager.loadCached(context)
+    suspend fun restoreSelectedIndex(context: Context) {
         val store = SettingsStore(context)
         val savedIndex = store.vpnServerIndex.first()
         val list = VpnServerManager.servers.value

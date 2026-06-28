@@ -246,7 +246,6 @@ class XrayVpnService : VpnService() {
         val uuid = store.vpnUuid.first().trim()
         if (uuid.isEmpty()) return null
 
-        VpnServerManager.loadCached(this)
         var list = VpnServerManager.servers.value
         if (list.isEmpty()) {
             VpnServerManager.fetchServers(this)
@@ -257,35 +256,48 @@ class XrayVpnService : VpnService() {
     }
 
     private fun configureVpn(): Boolean {
-        return try {
-            val builder = Builder()
-            builder.setMtu(HevTun2Socks.MTU)
-            builder.addAddress(HevTun2Socks.VPN_ADDRESS, 32)
-            builder.addRoute("0.0.0.0", 0)
-            builder.allowFamily(OsConstants.AF_INET)
-            builder.addDnsServer("1.1.1.1")
-            builder.addDnsServer("1.0.0.1")
-            try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
-            builder.setSession("ByPassMe VPN")
-            // XrayFA: non-blocking TUN для hev-socks5-tunnel
-            builder.setBlocking(false)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                try { connectivity.requestNetwork(defaultNetworkRequest, defaultNetworkCallback) }
-                catch (_: Exception) {}
+        repeat(8) { attempt ->
+            if (attempt > 0) {
+                Log.i(TAG, "configureVpn retry $attempt")
+                try { Thread.sleep(900L * attempt) } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                builder.setMetered(false)
-            }
+            try {
+                val builder = Builder()
+                builder.setMtu(HevTun2Socks.MTU)
+                builder.addAddress(HevTun2Socks.VPN_ADDRESS, 32)
+                builder.addRoute("0.0.0.0", 0)
+                builder.allowFamily(OsConstants.AF_INET)
+                builder.addDnsServer("1.1.1.1")
+                builder.addDnsServer("1.0.0.1")
+                try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+                builder.setSession("ByPassMe VPN")
+                builder.setBlocking(false)
 
-            vpnInterface = builder.establish()!!
-            isRunning = true
-            isSessionActive = true
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "configureVpn failed: ${e.message}", e)
-            false
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    try { connectivity.requestNetwork(defaultNetworkRequest, defaultNetworkCallback) }
+                    catch (_: Exception) {}
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    builder.setMetered(false)
+                }
+
+                val established = builder.establish()
+                if (established == null) {
+                    Log.w(TAG, "establish() returned null (attempt $attempt)")
+                    continue
+                }
+                vpnInterface = established
+                isRunning = true
+                isSessionActive = true
+                return true
+            } catch (e: Exception) {
+                Log.e(TAG, "configureVpn failed attempt $attempt: ${e.message}", e)
+            }
         }
+        return false
     }
 
     private fun startXrayCore(configJson: String) {

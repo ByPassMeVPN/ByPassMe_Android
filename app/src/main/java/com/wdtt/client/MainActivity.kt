@@ -123,29 +123,24 @@ class MainActivity : ComponentActivity() {
 
             val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
 
-            // Загружаем кеш и запускаем фоновую проверку при старте
+            // Подписка из DataStore + списки серверов при старте
             LaunchedEffect(Unit) {
                 XrayManager.registerReceiver(appContext)
+                if (!XrayManager.running.value) {
+                    XrayManager.connecting.value = false
+                }
                 SubscriptionChecker.loadCached(appContext)
-                XrayManager.loadCached(appContext)
-                BypassServerManager.loadCached(appContext)
-                VpnServerManager.loadCached(appContext)
+                XrayManager.restoreSelectedIndex(appContext)
                 SubscriptionChecker.refreshInBackground(appContext, scope)
                 BypassServerManager.refreshInBackground(appContext, scope)
                 VpnServerManager.refreshInBackground(appContext, scope)
             }
 
-            // После ввода подписки — автоматически загружаем список серверов
+            // После ввода подписки — загружаем списки серверов
             LaunchedEffect(savedUuid) {
                 if (savedUuid.isBlank()) return@LaunchedEffect
-                BypassServerManager.loadCached(appContext)
-                VpnServerManager.loadCached(appContext)
-                if (BypassServerManager.servers.value.isEmpty()) {
-                    BypassServerManager.fetchServers(appContext)
-                }
-                if (VpnServerManager.servers.value.isEmpty()) {
-                    VpnServerManager.fetchServers(appContext)
-                }
+                BypassServerManager.fetchServers(appContext)
+                VpnServerManager.fetchServers(appContext)
             }
 
             // Опрос каждые 5 секунд — удаление устройства / истечение подписки → стоп VPN + обход + онбординг

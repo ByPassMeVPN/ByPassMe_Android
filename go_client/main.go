@@ -100,7 +100,7 @@ func main() {
 	vkHash := flag.String("vk", "", "хеши VK-звонков (через запятую)")
 	secondaryHash := flag.String("vk2", "", "запасной VK хеш")
 	peerAddr := flag.String("peer", "", "адрес:порт VPS сервера")
-	numW := flag.Int("n", 24, "количество воркеров (кратно 12)")
+	numW := flag.Int("n", 18, "количество воркеров (кратно 9)")
 	useTCP := flag.Bool("tcp", false, "TURN через TCP")
 	useUDP := flag.Bool("udp", false, "TURN через UDP")
 	splitTunnel := flag.Bool("split", false, "split tunneling")

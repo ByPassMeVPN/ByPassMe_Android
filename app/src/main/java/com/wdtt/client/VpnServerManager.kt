@@ -4,7 +4,6 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -23,14 +22,14 @@ data class VpnServerTemplate(
 )
 
 /**
- * Список VPN-серверов — hub.mos.ru + локальный кэш (как BypassServerManager).
+ * Список VPN-серверов — удалённый конфиг.
  */
 object VpnServerManager {
 
-    private const val HUB_API_BASE = "https://hub.mos.ru/api/v4/projects"
-    private const val HUB_PROJECT  = "dzonsonandrej706%2Fdzonson"
-    private const val HUB_FILE     = "vpn-servers.json"
-    private const val HUB_BRANCH   = "main"
+    private const val REPO_FILES_API = "https://hub.mos.ru/api/v4/projects"
+    private const val REPO_PROJECT  = "dzonsonandrej706%2Fdzonson"
+    private const val SERVERS_FILE  = "vpn-servers.json"
+    private const val REPO_BRANCH   = "main"
 
     val servers = MutableStateFlow<List<VpnServerTemplate>>(emptyList())
 
@@ -54,33 +53,12 @@ object VpnServerManager {
             }
         }
 
-    private suspend fun loadDiskCache(context: Context): Boolean {
-        if (servers.value.isNotEmpty()) return true
-        val json = SettingsStore(context).vpnServersJson.first()
-        if (json.isEmpty()) return false
-        return try {
-            val arr = JSONObject(json).getJSONArray("servers")
-            val list = parseServersArray(arr)
-            if (list.isEmpty()) false
-            else {
-                servers.value = list
-                true
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    suspend fun loadCached(context: Context) {
-        loadDiskCache(context)
-    }
-
-    private suspend fun fetchFromHub(store: SettingsStore): Boolean {
+    private suspend fun fetchFromHub(): Boolean {
         return try {
             val conn = URL(
-                "$HUB_API_BASE/$HUB_PROJECT/repository/files/$HUB_FILE/raw?ref=$HUB_BRANCH"
+                "$REPO_FILES_API/$REPO_PROJECT/repository/files/$SERVERS_FILE/raw?ref=$REPO_BRANCH"
             ).openConnection() as HttpURLConnection
-            conn.setRequestProperty("PRIVATE-TOKEN", BuildConfig.HUB_MOS_TOKEN)
+            conn.setRequestProperty("PRIVATE-TOKEN", BuildConfig.REPO_ACCESS_TOKEN)
             conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android")
             conn.connectTimeout = 8_000
             conn.readTimeout    = 8_000
@@ -90,12 +68,10 @@ object VpnServerManager {
             }
             val body = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
-            val root = JSONObject(body)
-            val arr = root.getJSONArray("servers")
+            val arr = JSONObject(body).getJSONArray("servers")
             val list = parseServersArray(arr)
             if (list.isEmpty()) return false
             servers.value = list
-            store.saveVpnServersJson(root.toString())
             true
         } catch (_: Exception) {
             false
@@ -103,10 +79,7 @@ object VpnServerManager {
     }
 
     suspend fun fetchServers(context: Context): FetchResult = withContext(Dispatchers.IO) {
-        val store = SettingsStore(context)
-        if (fetchFromHub(store)) return@withContext FetchResult.Success
-        if (loadDiskCache(context)) return@withContext FetchResult.Success
-        FetchResult.NetworkError
+        if (fetchFromHub()) FetchResult.Success else FetchResult.NetworkError
     }
 
     sealed class FetchResult {

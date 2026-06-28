@@ -14,7 +14,9 @@ android {
     if (localPropertiesFile.exists()) {
         localProperties.load(localPropertiesFile.inputStream())
     }
-    val hubMosToken = localProperties.getProperty("HUB_MOS_TOKEN")
+    val repoAccessToken = localProperties.getProperty("REPO_ACCESS_TOKEN")
+        ?: localProperties.getProperty("HUB_MOS_TOKEN")
+        ?: System.getenv("REPO_ACCESS_TOKEN")
         ?: System.getenv("HUB_MOS_TOKEN")
         ?: ""
 
@@ -22,12 +24,12 @@ android {
         applicationId = "com.bypassme.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 26
-        versionName = "1.4.3"
+        versionCode = 28
+        versionName = "1.4.5"
 
         multiDexEnabled = true
 
-        buildConfigField("String", "HUB_MOS_TOKEN", "\"$hubMosToken\"")
+        buildConfigField("String", "REPO_ACCESS_TOKEN", "\"$repoAccessToken\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.map
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
     companion object {
+        /** Дефолт «Мощность» обхода: 18 (шаги 9 / 18 / 27). */
+        const val DEFAULT_WORKERS_BYPASS = 18
+
         private val Context.dataStore by preferencesDataStore("settings")
         private val PEER = stringPreferencesKey("peer")
         private val VK_HASHES = stringPreferencesKey("vk_hashes")
@@ -93,6 +96,12 @@ class SettingsStore(context: Context) {
         private val UPDATE_DIALOG_LAST_ACTION_VERSION = stringPreferencesKey("update_dialog_last_action_version")
         private val UPDATE_DIALOG_LAST_ACTION = stringPreferencesKey("update_dialog_last_action")
         private val UPDATE_DIALOG_LAST_ACTION_AT = longPreferencesKey("update_dialog_last_action_at")
+
+        private val WORKER_STEPS = intArrayOf(9, 18, 27)
+
+        /** Ближайшее из 9 / 18 / 27 (старые 12, 16, 24 не ломают UI). */
+        fun snapWorkers(value: Int): Int =
+            WORKER_STEPS.minByOrNull { kotlin.math.abs(it - value) } ?: DEFAULT_WORKERS_BYPASS
     }
 
     private val dataStore = appContext.dataStore
@@ -100,7 +109,9 @@ class SettingsStore(context: Context) {
     val peer: Flow<String> = dataStore.data.map { it[PEER] ?: "" }
     val vkHashes: Flow<String> = dataStore.data.map { it[VK_HASHES] ?: "" }
     val secondaryVkHash: Flow<String> = dataStore.data.map { it[SECONDARY_VK_HASH] ?: "" }
-    val workersPerHash: Flow<Int> = dataStore.data.map { it[WORKERS_PER_HASH] ?: 16 }
+    val workersPerHash: Flow<Int> = dataStore.data.map {
+        SettingsStore.snapWorkers(it[WORKERS_PER_HASH] ?: DEFAULT_WORKERS_BYPASS)
+    }
     val protocol: Flow<String> = dataStore.data.map { it[PROTOCOL] ?: "udp" }
     val listenPort: Flow<Int> = dataStore.data.map { it[LISTEN_PORT] ?: 9000 }
     val manualPortsEnabled: Flow<Boolean> = dataStore.data.map { it[MANUAL_PORTS_ENABLED] ?: false }

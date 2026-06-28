@@ -73,7 +73,7 @@ class TunnelService : Service() {
                     peer = intent.getStringExtra("peer") ?: "",
                     vkHashes = intent.getStringExtra("vk_hashes") ?: "",
                     secondaryVkHash = intent.getStringExtra("secondary_vk_hash") ?: "",
-                    workersPerHash = intent.getIntExtra("workers_per_hash", 16),
+                    workersPerHash = intent.getIntExtra("workers_per_hash", SettingsStore.DEFAULT_WORKERS_BYPASS),
                     port = intent.getIntExtra("port", 9000),
                     sni = intent.getStringExtra("sni") ?: "",
                     connectionPassword = connectionPassword,
@@ -82,7 +82,12 @@ class TunnelService : Service() {
                     captchaSolveMethod = intent.getStringExtra("captcha_solve_method") ?: "auto"
                 )
                 TunnelManager.scope.launch {
-                    ConnectionCoordinator.prepareForBypass(applicationContext)
+                    val handoffDone = intent.getBooleanExtra(ConnectionCoordinator.EXTRA_HANDOFF_DONE, false)
+                    if (!handoffDone) {
+                        ConnectionCoordinator.prepareForBypass(applicationContext)
+                    } else {
+                        delay(2_000)
+                    }
                     startTunnel(params)
                 }
             }

@@ -27,7 +27,6 @@ import java.net.URL
 object SubscriptionChecker {
 
     private const val BASE = "https://sub.bypassme.online"
-    private const val MIRROR = "http://178.154.245.221/sub"
 
     /** "active" | "expired" | "unknown" */
     val status   = MutableStateFlow("unknown")
@@ -56,54 +55,50 @@ object SubscriptionChecker {
         val androidId  = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE})"
 
-        var lastError = "Нет связи с сервером"
-        for (base in listOf(BASE, MIRROR)) {
-            val metaUrl = "$base/meta/$subKey"
-            try {
-                val conn = URL(metaUrl).openConnection() as HttpURLConnection
-                conn.setRequestProperty("X-HWID", androidId)
-                conn.setRequestProperty("X-Device-Name", deviceName)
-                conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android/${Build.VERSION.RELEASE}")
-                if (reconnect) {
-                    conn.setRequestProperty("X-Device-Reconnect", "1")
-                }
-                conn.connectTimeout = 5_000
-                conn.readTimeout    = 5_000
-                conn.instanceFollowRedirects = true
-
-                val code = conn.responseCode
-                val body = runCatching { conn.inputStream.bufferedReader().readText() }
-                    .getOrElse { runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull() ?: "" }
-                conn.disconnect()
-
-                when {
-                    code == 403 -> {
-                        val error = runCatching { JSONObject(body).optString("error", "") }.getOrDefault("")
-                        return@withContext when (error) {
-                            "device_limit" -> Result.DeviceLimitExceeded
-                            "device_blocked" -> {
-                                revokeAccess(context, "blocked")
-                                Result.DeviceBlocked
-                            }
-                            "device_removed" -> {
-                                revokeAccess(context, "removed")
-                                Result.DeviceRemoved
-                            }
-                            else -> Result.Error("Ошибка доступа (403)")
-                        }
-                    }
-                    code == 404 -> {
-                        revokeAccess(context, "expired")
-                        Result.Revoked
-                    }
-                    code == 200 && body.isNotEmpty() -> return@withContext parseAndSave(context, url, body)
-                    else -> lastError = "Ошибка сервера: $code"
-                }
-            } catch (_: Exception) {
-                lastError = "Нет связи с сервером"
+        val metaUrl = "$BASE/meta/$subKey"
+        try {
+            val conn = URL(metaUrl).openConnection() as HttpURLConnection
+            conn.setRequestProperty("X-HWID", androidId)
+            conn.setRequestProperty("X-Device-Name", deviceName)
+            conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android/${Build.VERSION.RELEASE}")
+            if (reconnect) {
+                conn.setRequestProperty("X-Device-Reconnect", "1")
             }
+            conn.connectTimeout = 5_000
+            conn.readTimeout    = 5_000
+            conn.instanceFollowRedirects = true
+
+            val code = conn.responseCode
+            val body = runCatching { conn.inputStream.bufferedReader().readText() }
+                .getOrElse { runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull() ?: "" }
+            conn.disconnect()
+
+            when {
+                code == 403 -> {
+                    val error = runCatching { JSONObject(body).optString("error", "") }.getOrDefault("")
+                    return@withContext when (error) {
+                        "device_limit" -> Result.DeviceLimitExceeded
+                        "device_blocked" -> {
+                            revokeAccess(context, "blocked")
+                            Result.DeviceBlocked
+                        }
+                        "device_removed" -> {
+                            revokeAccess(context, "removed")
+                            Result.DeviceRemoved
+                        }
+                        else -> Result.Error("Ошибка доступа (403)")
+                    }
+                }
+                code == 404 -> {
+                    revokeAccess(context, "expired")
+                    Result.Revoked
+                }
+                code == 200 && body.isNotEmpty() -> return@withContext parseAndSave(context, url, body)
+                else -> return@withContext Result.Error("Ошибка сервера: $code")
+            }
+        } catch (_: Exception) {
+            return@withContext Result.Error("Нет связи с сервером")
         }
-        Result.Error(lastError)
     }
 
     private suspend fun parseAndSave(context: Context, url: String, body: String): Result {

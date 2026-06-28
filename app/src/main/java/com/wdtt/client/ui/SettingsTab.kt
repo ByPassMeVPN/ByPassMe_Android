@@ -63,7 +63,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private const val WORKERS_PER_GROUP = 12
+private const val WORKERS_PER_GROUP = 9
+private const val MAX_WORKERS = 27
+private const val DEFAULT_WORKERS = 18
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,24 +106,26 @@ fun BypassTabContent(
 
     var selectedServer by rememberSaveable { mutableIntStateOf(0) }
     var vkLinkInput by rememberSaveable { mutableStateOf("") }
-    var workersInput by rememberSaveable { mutableFloatStateOf(24f) }
+    var workersInput by rememberSaveable { mutableFloatStateOf(DEFAULT_WORKERS.toFloat()) }
     var initialized by remember { mutableStateOf(false) }
     var showSubDialog by rememberSaveable { mutableStateOf(false) }
     var showDeviceLimit by rememberSaveable { mutableStateOf(false) }
 
     val vkHash = remember(vkLinkInput) { stripVkUrl(vkLinkInput.trim()) }
     val isVkLinkValid = vkHash.length >= 16
-    val dynamicMaxWorkers = 24f
+    val dynamicMaxWorkers = MAX_WORKERS.toFloat()
 
     LaunchedEffect(Unit) {
         val hashes = settingsStore.vkHashes.first()
         val workers = settingsStore.workersPerHash.first()
         val savedPeer = settingsStore.peer.first()
         val savedIndex = settingsStore.bypassServerIndex.first()
+        if (savedUuid.isNotBlank() && bypassServers.isEmpty()) {
+            BypassServerManager.fetchServers(context)
+        }
         val firstHash = hashes.split(",").firstOrNull { it.isNotBlank() } ?: ""
         vkLinkInput = if (firstHash.isNotEmpty()) "https://vk.com/call/join/$firstHash" else ""
-        workersInput = roundToGroup(workers.toFloat(), dynamicMaxWorkers)
-        BypassServerManager.loadCached(context)
+        workersInput = SettingsStore.snapWorkers(workers).toFloat()
         val list = BypassServerManager.servers.value
         selectedServer = when {
             list.isEmpty() -> savedIndex
@@ -169,7 +173,7 @@ fun BypassTabContent(
                 "Подписка не найдена"
             BypassServerManager.FetchResult.NoSubscription ->
                 "Сначала введите ссылку подписки"
-            else -> "Не удалось загрузить с hub.mos.ru · используется кэш"
+            else -> "Не удалось загрузить список серверов"
         }
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
@@ -209,8 +213,9 @@ fun BypassTabContent(
                 ConnectionCoordinator.prepareForBypass(context)
 
                 val intent = Intent(context, TunnelService::class.java).apply {
-                action = "START"
-                putExtra("peer", server.peer)
+                    action = "START"
+                    putExtra(ConnectionCoordinator.EXTRA_HANDOFF_DONE, true)
+                    putExtra("peer", server.peer)
                 putExtra("vk_hashes", vkHash)
                 putExtra("secondary_vk_hash", "")
                 putExtra("workers_per_hash", currentWorkers.toInt())
@@ -775,10 +780,8 @@ fun BypassSecretsDialog(
 }
 
 // ═══ Утилиты ═══
-private fun roundToGroup(value: Float, maxW: Float = 96f): Float {
-    val rounded = (Math.round(value / WORKERS_PER_GROUP) * WORKERS_PER_GROUP).toFloat()
-    return rounded.coerceIn(WORKERS_PER_GROUP.toFloat(), maxW)
-}
+private fun roundToGroup(value: Float, maxW: Float = MAX_WORKERS.toFloat()): Float =
+    SettingsStore.snapWorkers(value.roundToInt()).toFloat().coerceIn(WORKERS_PER_GROUP.toFloat(), maxW)
 
 private fun stripVkUrl(input: String): String {
     var s = input.trim()

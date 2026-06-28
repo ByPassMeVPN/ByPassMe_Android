@@ -101,6 +101,16 @@ class WireGuardHelper(context: Context) {
                 throw IllegalStateException("VPN-разрешение не выдано")
             }
 
+            // Ждём освобождения VPN-слота после Xray (до ~8 с)
+            for (attempt in 0 until 10) {
+                if (!XrayVpnService.isSessionActive) {
+                    if (attempt > 0) delay(600)
+                    break
+                }
+                delay(800)
+            }
+            delay(500)
+
             ensureGoBackendServiceStarted()
 
             sharedTunnel?.let { existingTunnel ->
@@ -217,7 +227,7 @@ class WireGuardHelper(context: Context) {
     suspend fun releaseVpnCompletely() {
         stopTunnel()
         stopGoBackendService()
-        delay(500)
+        delay(800)
     }
 
     private suspend fun stopGoBackendService() {
@@ -228,7 +238,7 @@ class WireGuardHelper(context: Context) {
                 Log.w("WG", "GoBackend stop failed: ${it.readableMessage()}")
             }
         }
-        delay(400)
+        delay(600)
     }
 
     private suspend fun ensureGoBackendServiceStarted() {

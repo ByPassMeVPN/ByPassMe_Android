@@ -1,7 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Российское зеркало API — только HTTP -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">178.154.245.221</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

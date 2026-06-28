@@ -4,20 +4,43 @@ import android.content.Context
 import android.content.Intent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Гарантирует, что VPN (xray) и Обход Б/С (WireGuard) не работают одновременно.
- * На Android активен только один VpnService — между режимами нужна пауза.
+ * Переключение VPN (xray) ↔ Обход Б/С (WireGuard).
+ * На Android одновременно активен только один VpnService — нужна пауза ~3 с.
  */
 object ConnectionCoordinator {
 
-    private const val STOP_TIMEOUT_MS = 10_000L
-    private const val VPN_RELEASE_DELAY_MS = 1_200L
-    private const val POLL_MS = 100L
+    const val EXTRA_HANDOFF_DONE = "handoff_done"
 
-    suspend fun stopBypass(context: Context) = withContext(Dispatchers.IO) {
-        if (!TunnelManager.running.value && !TunnelManager.tunnelReady.value) return@withContext
+    private val handoffMutex = Mutex()
+
+    /** Ждём после остановки, пока система освободит VPN-интерфейс. */
+    private const val SLOT_RELEASE_MS = 3_000L
+    private const val STOP_TIMEOUT_MS = 12_000L
+    private const val POLL_MS = 150L
+
+    suspend fun prepareForVpn(context: Context) = handoffMutex.withLock {
+        withContext(Dispatchers.IO) {
+            stopBypass(context)
+            stopVpn(context)
+            waitVpnSlotReleased()
+        }
+    }
+
+    suspend fun prepareForBypass(context: Context) = handoffMutex.withLock {
+        withContext(Dispatchers.IO) {
+            stopVpn(context)
+            stopBypass(context)
+            waitVpnSlotReleased()
+        }
+    }
+
+    private suspend fun stopBypass(context: Context) {
+        if (!TunnelManager.running.value && !TunnelManager.tunnelReady.value) return
 
         TunnelManager.stopAndWait()
         context.startService(
@@ -26,12 +49,11 @@ object ConnectionCoordinator {
         waitUntil(STOP_TIMEOUT_MS) {
             !TunnelManager.running.value && !TunnelManager.tunnelReady.value
         }
-        delay(VPN_RELEASE_DELAY_MS)
     }
 
-    suspend fun stopVpn(context: Context) = withContext(Dispatchers.IO) {
+    private suspend fun stopVpn(context: Context) {
         if (!XrayManager.running.value && !XrayManager.connecting.value && !XrayVpnService.isSessionActive) {
-            return@withContext
+            return
         }
 
         XrayManager.connecting.value = false
@@ -40,19 +62,22 @@ object ConnectionCoordinator {
             !XrayManager.running.value && !XrayManager.connecting.value
         }
         XrayVpnService.waitUntilStopped(STOP_TIMEOUT_MS)
-        delay(VPN_RELEASE_DELAY_MS)
     }
 
-    suspend fun prepareForVpn(context: Context) = withContext(Dispatchers.IO) {
-        stopBypass(context)
-        stopVpn(context)
-        delay(300)
-    }
-
-    suspend fun prepareForBypass(context: Context) = withContext(Dispatchers.IO) {
-        stopVpn(context)
-        stopBypass(context)
-        delay(300)
+    /** Проверяем флаги + фиксированная пауза для Android VPN stack. */
+    private suspend fun waitVpnSlotReleased() {
+        repeat(60) {
+            val xrayFree = !XrayVpnService.isSessionActive &&
+                !XrayManager.running.value &&
+                !XrayManager.connecting.value
+            val bypassFree = !TunnelManager.tunnelReady.value && !TunnelManager.running.value
+            if (xrayFree && bypassFree) {
+                delay(SLOT_RELEASE_MS)
+                return
+            }
+            delay(POLL_MS)
+        }
+        delay(SLOT_RELEASE_MS)
     }
 
     private suspend fun waitUntil(timeoutMs: Long, condition: () -> Boolean): Boolean {
