@@ -4,12 +4,11 @@
 -dontwarn com.mwiede.jsch.**
 
 -keep class go.** { *; }
--keep class com.hiddify.core.** { *; }
 -keep class libv2ray.** { *; }
 
 -keepclasseswithmembernames class * {
     native <methods>;
 }
 
--keep class com.wdtt.client.vpn.** { *; }
--keep class com.wdtt.client.SingBoxVpnService { *; }
+-keep class com.wdtt.client.XrayVpnService { *; }
+-keep class com.wdtt.client.HevTun2Socks { *; }

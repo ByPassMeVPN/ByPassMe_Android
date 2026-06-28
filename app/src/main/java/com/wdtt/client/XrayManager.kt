@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
-import com.wdtt.client.vpn.SingBoxConfigBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,31 +29,31 @@ object XrayManager {
         receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
-                    SingBoxVpnService.BROADCAST_RUNNING -> {
+                    XrayVpnService.BROADCAST_RUNNING -> {
                         cancelConnectTimeout()
                         running.value = true
                         connecting.value = false
                         lastError.value = ""
                     }
-                    SingBoxVpnService.BROADCAST_STOPPED -> {
+                    XrayVpnService.BROADCAST_STOPPED -> {
                         cancelConnectTimeout()
                         running.value = false
                         connecting.value = false
                     }
-                    SingBoxVpnService.BROADCAST_ERROR -> {
+                    XrayVpnService.BROADCAST_ERROR -> {
                         cancelConnectTimeout()
                         running.value = false
                         connecting.value = false
-                        lastError.value = intent.getStringExtra(SingBoxVpnService.EXTRA_ERROR_MSG)
+                        lastError.value = intent.getStringExtra(XrayVpnService.EXTRA_ERROR_MSG)
                             ?: "Неизвестная ошибка"
                     }
                 }
             }
         }
         val filter = IntentFilter().apply {
-            addAction(SingBoxVpnService.BROADCAST_RUNNING)
-            addAction(SingBoxVpnService.BROADCAST_STOPPED)
-            addAction(SingBoxVpnService.BROADCAST_ERROR)
+            addAction(XrayVpnService.BROADCAST_RUNNING)
+            addAction(XrayVpnService.BROADCAST_STOPPED)
+            addAction(XrayVpnService.BROADCAST_ERROR)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             appCtx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -103,12 +102,12 @@ object XrayManager {
         SettingsStore(context).saveVpnServerIndex(idx)
 
         val server = list[idx]
-        val configJson = SingBoxConfigBuilder.build(server, uuid)
+        val configJson = XrayConfigBuilder.build(server, uuid)
 
         connecting.value = true
         scheduleConnectTimeout(context)
         ConnectionCoordinator.prepareForVpn(context)
-        SingBoxVpnService.start(context, configJson)
+        XrayVpnService.start(context, server.id, configJson)
     }
 
     suspend fun stopVpn(context: Context) {
@@ -135,8 +134,8 @@ object XrayManager {
         connecting.value = true
         scheduleConnectTimeout(context)
         val server = list[serverIndex]
-        val configJson = SingBoxConfigBuilder.build(server, uuid)
-        SingBoxVpnService.start(context, configJson)
+        val configJson = XrayConfigBuilder.build(server, uuid)
+        XrayVpnService.start(context, server.id, configJson)
     }
 
     private fun scheduleConnectTimeout(context: Context) {
@@ -146,7 +145,7 @@ object XrayManager {
             if (connecting.value && !running.value) {
                 connecting.value = false
                 lastError.value = "Таймаут подключения VPN"
-                SingBoxVpnService.stop(context.applicationContext)
+                XrayVpnService.stop(context.applicationContext)
             }
         }
     }

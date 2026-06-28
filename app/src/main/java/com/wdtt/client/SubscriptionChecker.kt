@@ -188,7 +188,7 @@ object SubscriptionChecker {
     }
 
     private fun stopAllTunnels(context: Context) {
-        SingBoxVpnService.stop(context)
+        XrayVpnService.stop(context)
         context.startService(
             Intent(context, TunnelService::class.java).apply { action = "STOP" }
         )
