@@ -135,7 +135,10 @@ object XrayManager {
         scheduleConnectTimeout(context)
         val server = list[serverIndex]
         val configJson = XrayConfigBuilder.build(server, uuid)
-        XrayVpnService.start(context, server.id, configJson)
+        if (running.value) {
+            ConnectionCoordinator.stopVpn(context)
+        }
+        XrayVpnService.restart(context, server.id, configJson)
     }
 
     private fun scheduleConnectTimeout(context: Context) {

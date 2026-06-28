@@ -39,6 +39,7 @@ class XrayVpnService : VpnService() {
 
         const val ACTION_START = "START_XRAY"
         const val ACTION_STOP  = "STOP_XRAY"
+        const val ACTION_RESTART = "RESTART_XRAY"
         const val EXTRA_SERVER_ID = "server_id"
         const val EXTRA_CONFIG_JSON = "config_json"
 
@@ -52,6 +53,17 @@ class XrayVpnService : VpnService() {
             context.startForegroundService(
                 Intent(context, XrayVpnService::class.java).apply {
                     action = ACTION_START
+                    putExtra(EXTRA_SERVER_ID, serverId)
+                    putExtra(EXTRA_CONFIG_JSON, configJson)
+                }
+            )
+        }
+
+        /** Смена сервера без stopSelf — не прерывает рабочий поток сервиса. */
+        fun restart(context: Context, serverId: String, configJson: String) {
+            context.startForegroundService(
+                Intent(context, XrayVpnService::class.java).apply {
+                    action = ACTION_RESTART
                     putExtra(EXTRA_SERVER_ID, serverId)
                     putExtra(EXTRA_CONFIG_JSON, configJson)
                 }
@@ -103,6 +115,7 @@ class XrayVpnService : VpnService() {
     private var coreController: CoreController? = null
     private var hevTun2Socks: HevTun2Socks? = null
     private var coreThread: Thread? = null
+    @Volatile private var isRestarting = false
     private val vpnExecutor = Executors.newSingleThreadExecutor { Thread(it, "xray-vpn-setup") }
 
     private val coreCallback = object : CoreCallbackHandler {
@@ -149,17 +162,45 @@ class XrayVpnService : VpnService() {
                 showNotification()
                 vpnExecutor.execute {
                     try {
-                        if (isRunning) stopAllInternal()
+                        if (isRunning) teardownSession()
                         setupAndStart(serverId, configJson)
                     } catch (t: Throwable) {
+                        if (t is InterruptedException || t.cause is InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            Log.w(TAG, "setup interrupted")
+                            return@execute
+                        }
                         Log.e(TAG, "setup failed: ${t.message}", t)
                         fail("VPN: ${t.message ?: t.javaClass.simpleName}")
                     }
                 }
                 START_STICKY
             }
+            ACTION_RESTART -> {
+                val serverId = intent.getStringExtra(EXTRA_SERVER_ID) ?: return START_NOT_STICKY
+                val configJson = intent.getStringExtra(EXTRA_CONFIG_JSON)
+                showNotification()
+                vpnExecutor.execute {
+                    isRestarting = true
+                    try {
+                        if (isRunning) teardownSession()
+                        setupAndStart(serverId, configJson)
+                    } catch (t: Throwable) {
+                        if (t is InterruptedException || t.cause is InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            Log.w(TAG, "restart interrupted")
+                            return@execute
+                        }
+                        Log.e(TAG, "restart failed: ${t.message}", t)
+                        fail("VPN: ${t.message ?: t.javaClass.simpleName}")
+                    } finally {
+                        isRestarting = false
+                    }
+                }
+                START_STICKY
+            }
             ACTION_STOP -> {
-                vpnExecutor.execute { stopAllInternal() }
+                vpnExecutor.execute { shutdownService() }
                 START_NOT_STICKY
             }
             else -> START_NOT_STICKY
@@ -250,7 +291,13 @@ class XrayVpnService : VpnService() {
 
             var waited = 0
             while (!ctrl.isRunning && waited < 100) {
-                Thread.sleep(100)
+                try {
+                    Thread.sleep(100)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    if (isRestarting) return
+                    throw InterruptedException("xray startup interrupted")
+                }
                 waited++
             }
             if (!ctrl.isRunning) {
@@ -270,45 +317,53 @@ class XrayVpnService : VpnService() {
             sendBroadcast(Intent(BROADCAST_RUNNING).setPackage(PKG))
             Log.i(TAG, "VPN started (xray + hev-socks5)")
         } catch (t: Throwable) {
+            if (t is InterruptedException || t.cause is InterruptedException) {
+                Thread.currentThread().interrupt()
+                Log.w(TAG, "startXrayCore interrupted")
+                return
+            }
             Log.e(TAG, "startXrayCore failed: ${t.message}", t)
             fail("xray ошибка: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
     private fun fail(msg: String) {
+        if (isRestarting && msg.contains("Interrupted", ignoreCase = true)) return
         Log.e(TAG, msg)
         sendBroadcast(Intent(BROADCAST_ERROR).setPackage(PKG).putExtra(EXTRA_ERROR_MSG, msg))
-        stopAllInternal()
+        shutdownService()
     }
 
     private fun stopCore() {
         try { coreController?.let { if (it.isRunning) it.stopLoop() } } catch (_: Exception) {}
         coreController = null
-        coreThread?.interrupt()
+        val thread = coreThread
         coreThread = null
+        try { thread?.join(3_000) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
-    private fun stopAllInternal() {
+    /** Остановить туннель, сервис остаётся живым (смена сервера). */
+    private fun teardownSession() {
         isRunning = false
-
         try { hevTun2Socks?.stop() } catch (_: Exception) {}
         hevTun2Socks = null
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try { connectivity.unregisterNetworkCallback(defaultNetworkCallback) } catch (_: Exception) {}
         }
-
         stopCore()
-        sendBroadcast(Intent(BROADCAST_STOPPED).setPackage(PKG))
-
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-
-        try { Thread.sleep(100) } catch (_: InterruptedException) {}
-
         if (::vpnInterface.isInitialized) {
             try { vpnInterface.close() } catch (_: Exception) {}
         }
+    }
+
+    /** Полная остановка VPN-сервиса. */
+    private fun shutdownService() {
+        teardownSession()
+        sendBroadcast(Intent(BROADCAST_STOPPED).setPackage(PKG))
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     private fun showNotification() {
@@ -336,12 +391,11 @@ class XrayVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        vpnExecutor.execute { stopAllInternal() }
+        vpnExecutor.execute { shutdownService() }
     }
 
     override fun onDestroy() {
-        if (isRunning) stopAllInternal()
-        vpnExecutor.shutdownNow()
+        if (isRunning) teardownSession()
         super.onDestroy()
     }
 }

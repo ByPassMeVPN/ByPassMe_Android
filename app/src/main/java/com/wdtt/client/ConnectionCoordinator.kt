@@ -9,27 +9,30 @@ import kotlinx.coroutines.delay
  */
 object ConnectionCoordinator {
 
-    private const val STOP_TIMEOUT_MS = 6_000L
+    private const val STOP_TIMEOUT_MS = 8_000L
+    private const val VPN_RELEASE_DELAY_MS = 600L
     private const val POLL_MS = 100L
 
     suspend fun stopBypass(context: Context) {
         if (!TunnelManager.running.value && !TunnelManager.tunnelReady.value) return
 
+        // Сначала гарантированно гасим WireGuard (иначе XrayVpnService не поднимет TUN)
+        TunnelManager.stopAndWait()
         context.startService(
             Intent(context, TunnelService::class.java).apply { action = "STOP" }
         )
-        if (waitUntil(STOP_TIMEOUT_MS) { !TunnelManager.running.value && !TunnelManager.tunnelReady.value }) {
-            return
-        }
-
-        TunnelManager.stopAndWait()
+        delay(VPN_RELEASE_DELAY_MS)
     }
 
     suspend fun stopVpn(context: Context) {
-        if (!XrayManager.running.value) return
+        if (!XrayManager.running.value && !XrayManager.connecting.value) return
 
+        XrayManager.connecting.value = false
         XrayVpnService.stop(context)
-        waitUntil(STOP_TIMEOUT_MS) { !XrayManager.running.value }
+        waitUntil(STOP_TIMEOUT_MS) {
+            !XrayManager.running.value && !XrayManager.connecting.value
+        }
+        delay(VPN_RELEASE_DELAY_MS)
     }
 
     suspend fun prepareForVpn(context: Context) {

@@ -544,7 +544,7 @@ object TunnelManager {
     fun stop() {
         isCaptchaSolving = false
         tunnelReady.value = false
-        CaptchaWebViewManager.onTunnelStop() // отменяем авто WebView если решается
+        CaptchaWebViewManager.onTunnelStop()
         scope.launch(Dispatchers.Main) {
             wgHelper?.stopTunnel()
         }
@@ -555,7 +555,7 @@ object TunnelManager {
         ManlCaptchaWebViewManager.cancelCaptcha()
     }
 
-    // Suspend-версия: гарантирует что процесс мёртв и порт свободен
+    /** Синхронная остановка WireGuard + Go-процесса перед переключением на VPN. */
     suspend fun stopAndWait() {
         isCaptchaSolving = false
         tunnelReady.value = false
