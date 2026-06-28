@@ -21,7 +21,7 @@ class WireGuardHelper(context: Context) {
     private val appContext = context.applicationContext
     private val backend = (appContext as WdttApplication).getBackend(context)
 
-    private companion object {
+    companion object {
         val wgMutex = Mutex()
         var sharedTunnel: WgTunnel? = null
 
