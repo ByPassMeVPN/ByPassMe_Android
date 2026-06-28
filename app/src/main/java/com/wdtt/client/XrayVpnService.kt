@@ -24,6 +24,7 @@ import kotlinx.coroutines.runBlocking
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -102,6 +103,7 @@ class XrayVpnService : VpnService() {
     private var coreController: CoreController? = null
     private var hevTun2Socks: HevTun2Socks? = null
     private var coreThread: Thread? = null
+    private val vpnExecutor = Executors.newSingleThreadExecutor { Thread(it, "xray-vpn-setup") }
 
     private val coreCallback = object : CoreCallbackHandler {
         override fun startup(): Long = 0
@@ -145,12 +147,19 @@ class XrayVpnService : VpnService() {
                 val serverId = intent.getStringExtra(EXTRA_SERVER_ID) ?: return START_NOT_STICKY
                 val configJson = intent.getStringExtra(EXTRA_CONFIG_JSON)
                 showNotification()
-                if (isRunning) stopAll()
-                setupAndStart(serverId, configJson)
+                vpnExecutor.execute {
+                    try {
+                        if (isRunning) stopAllInternal()
+                        setupAndStart(serverId, configJson)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "setup failed: ${t.message}", t)
+                        fail("VPN: ${t.message ?: t.javaClass.simpleName}")
+                    }
+                }
                 START_STICKY
             }
             ACTION_STOP -> {
-                stopAll()
+                vpnExecutor.execute { stopAllInternal() }
                 START_NOT_STICKY
             }
             else -> START_NOT_STICKY
@@ -250,25 +259,26 @@ class XrayVpnService : VpnService() {
             }
 
             try {
-                hevTun2Socks = HevTun2Socks(this, vpnInterface).also { it.start() }
-            } catch (e: Exception) {
-                Log.e(TAG, "hev start failed: ${e.message}", e)
-                fail("TUN туннель: ${e.message ?: "ошибка"}")
+                hevTun2Socks = HevTun2Socks(this@XrayVpnService, vpnInterface).also { it.start() }
+            } catch (t: Throwable) {
+                Log.e(TAG, "hev start failed: ${t.message}", t)
+                fail("TUN туннель: ${t.message ?: "ошибка"}")
                 return
             }
 
             Thread.sleep(200)
             sendBroadcast(Intent(BROADCAST_RUNNING).setPackage(PKG))
             Log.i(TAG, "VPN started (xray + hev-socks5)")
-        } catch (e: Exception) {
-            fail("xray ошибка: ${e.message}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "startXrayCore failed: ${t.message}", t)
+            fail("xray ошибка: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
     private fun fail(msg: String) {
         Log.e(TAG, msg)
         sendBroadcast(Intent(BROADCAST_ERROR).setPackage(PKG).putExtra(EXTRA_ERROR_MSG, msg))
-        stopAll()
+        stopAllInternal()
     }
 
     private fun stopCore() {
@@ -278,7 +288,7 @@ class XrayVpnService : VpnService() {
         coreThread = null
     }
 
-    private fun stopAll() {
+    private fun stopAllInternal() {
         isRunning = false
 
         try { hevTun2Socks?.stop() } catch (_: Exception) {}
@@ -325,10 +335,13 @@ class XrayVpnService : VpnService() {
         )
     }
 
-    override fun onRevoke() = stopAll()
+    override fun onRevoke() {
+        vpnExecutor.execute { stopAllInternal() }
+    }
 
     override fun onDestroy() {
-        if (isRunning) stopAll()
+        if (isRunning) stopAllInternal()
+        vpnExecutor.shutdownNow()
         super.onDestroy()
     }
 }

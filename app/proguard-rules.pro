@@ -12,3 +12,4 @@
 
 -keep class com.wdtt.client.XrayVpnService { *; }
 -keep class com.wdtt.client.HevTun2Socks { *; }
+-keep class com.v2ray.ang.service.TProxyService { *; }
