@@ -228,10 +228,6 @@ class XrayVpnService : VpnService() {
         try {
             initCoreEnv(this)
 
-            Libv2ray.useProtector(object : libv2ray.V2RayProtector {
-                override fun protect(fd: Long): Boolean = protect(fd.toInt())
-            })
-
             val ctrl = Libv2ray.newCoreController(coreCallback)
             coreController = ctrl
 
