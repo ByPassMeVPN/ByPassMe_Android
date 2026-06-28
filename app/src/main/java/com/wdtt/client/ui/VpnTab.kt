@@ -131,13 +131,7 @@ private fun VpnTabContent(
     }
 
     fun startVpnConnection() {
-        scope.launch {
-            try {
-                XrayManager.startVpn(context)
-            } catch (e: Exception) {
-                Toast.makeText(context, e.message ?: "Ошибка VPN", Toast.LENGTH_LONG).show()
-            }
-        }
+        XrayManager.startVpnAsync(context)
     }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
@@ -288,7 +282,7 @@ private fun VpnTabContent(
                             scope.launch {
                                 settingsStore.saveVpnServerIndex(index)
                                 if (vpnRunning || vpnConnecting) {
-                                    XrayManager.switchServer(context, index)
+                                    XrayManager.switchServerAsync(context, index)
                                 }
                             }
                         }
@@ -314,7 +308,7 @@ private fun VpnTabContent(
 
         Button(
             onClick = {
-                if (vpnActive) scope.launch { XrayManager.stopVpn(context) }
+                if (vpnActive) XrayManager.stopVpnAsync(context)
                 else requestVpnAndStart()
             },
             enabled = (savedUuid.isNotBlank() && vpnServers.isNotEmpty()) || vpnActive,

@@ -61,6 +61,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlin.math.roundToInt
 
 private const val WORKERS_PER_GROUP = 9
@@ -203,16 +205,17 @@ fun BypassTabContent(
             return
         }
         saveJob?.cancel()
-        scope.launch {
+        val appContext = context.applicationContext
+        TunnelManager.scope.launch {
             try {
                 settingsStore.save(server.host, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
                 settingsStore.saveConnectionPassword(connectionPassword)
                 settingsStore.saveCaptchaMode("rjs")
                 settingsStore.saveCaptchaSolveMethod("auto")
 
-                ConnectionCoordinator.prepareForBypass(context)
+                ConnectionCoordinator.prepareForBypass(appContext)
 
-                val intent = Intent(context, TunnelService::class.java).apply {
+                val intent = Intent(appContext, TunnelService::class.java).apply {
                     action = "START"
                     putExtra(ConnectionCoordinator.EXTRA_HANDOFF_DONE, true)
                     putExtra("peer", server.peer)
@@ -226,14 +229,16 @@ fun BypassTabContent(
                 putExtra("captcha_mode", "rjs")
                 putExtra("captcha_solve_method", "auto")
             }
-            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
-            else context.startService(intent)
+            if (Build.VERSION.SDK_INT >= 26) appContext.startForegroundService(intent)
+            else appContext.startService(intent)
             } catch (e: Exception) {
-                android.widget.Toast.makeText(
-                    context,
-                    e.message ?: "Ошибка запуска обхода",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        e.message ?: "Ошибка запуска обхода",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }

@@ -86,7 +86,7 @@ class TunnelService : Service() {
                     if (!handoffDone) {
                         ConnectionCoordinator.prepareForBypass(applicationContext)
                     } else {
-                        delay(2_000)
+                        delay(500)
                     }
                     startTunnel(params)
                 }
