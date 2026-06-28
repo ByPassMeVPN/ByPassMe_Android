@@ -12,7 +12,6 @@ import com.wireguard.config.Peer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -25,6 +24,10 @@ class WireGuardHelper(context: Context) {
     private companion object {
         val wgMutex = Mutex()
         var sharedTunnel: WgTunnel? = null
+
+        /** WireGuard TUN активен (GoBackend держит VPN-слот). */
+        val isVpnSlotInUse: Boolean
+            get() = sharedTunnel != null
 
         // Белый список РФ — эти приложения всегда идут напрямую (без туннеля).
         // Они доступны при ограничениях мобильного интернета, туннель им не нужен.

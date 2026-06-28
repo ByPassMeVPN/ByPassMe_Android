@@ -107,6 +107,7 @@ object XrayManager {
             connecting.value = true
             scheduleConnectTimeout(context)
             ConnectionCoordinator.prepareForVpn(context)
+            delay(2_000)
             XrayVpnService.start(context, server.id, configJson)
         } catch (e: Exception) {
             connecting.value = false

@@ -24,8 +24,8 @@ android {
         applicationId = "com.bypassme.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 28
-        versionName = "1.4.5"
+        versionCode = 29
+        versionName = "1.4.6"
 
         multiDexEnabled = true
 
