@@ -117,7 +117,7 @@ object XrayManager {
     suspend fun stopVpn(context: Context) {
         cancelConnectTimeout()
         connecting.value = false
-        ConnectionCoordinator.stopVpn(context)
+        XrayVpnService.stop(context)
     }
 
     suspend fun switchServer(context: Context, serverIndex: Int) = withContext(Dispatchers.IO) {

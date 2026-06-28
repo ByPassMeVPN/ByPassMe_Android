@@ -287,7 +287,7 @@ class XrayVpnService : VpnService() {
                 val established = builder.establish()
                 if (established == null) {
                     Log.w(TAG, "establish() returned null (attempt $attempt)")
-                    continue
+                    return@repeat
                 }
                 vpnInterface = established
                 isRunning = true
