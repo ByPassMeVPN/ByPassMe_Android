@@ -22,6 +22,7 @@ import go.Seq
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
+import com.wireguard.android.backend.GoBackend
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
@@ -256,6 +257,7 @@ class XrayVpnService : VpnService() {
     }
 
     private fun configureVpn(): Boolean {
+        releaseGoBackendSlot()
         for (attempt in 0 until 15) {
             if (WireGuardHelper.isVpnSlotInUse) {
                 try {
@@ -298,6 +300,13 @@ class XrayVpnService : VpnService() {
                 val established = builder.establish()
                 if (established == null) {
                     Log.w(TAG, "establish() returned null (attempt $attempt)")
+                    releaseGoBackendSlot()
+                    try {
+                        Thread.sleep(300)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return false
+                    }
                     continue
                 }
                 vpnInterface = established
@@ -309,6 +318,12 @@ class XrayVpnService : VpnService() {
             }
         }
         return false
+    }
+
+    private fun releaseGoBackendSlot() {
+        runCatching {
+            stopService(Intent(this, GoBackend.VpnService::class.java))
+        }
     }
 
     private fun startXrayCore(configJson: String) {

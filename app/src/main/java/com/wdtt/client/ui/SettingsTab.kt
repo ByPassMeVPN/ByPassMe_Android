@@ -460,8 +460,15 @@ fun BypassTabContent(
 
         Button(
             onClick = {
-                if (tunnelRunning) context.startService(Intent(context, TunnelService::class.java).apply { action = "STOP" })
-                else requestVpnAndStart()
+                if (tunnelRunning) {
+                    val appCtx = context.applicationContext
+                    TunnelManager.scope.launch {
+                        TunnelManager.stopAndWait()
+                        appCtx.startService(
+                            Intent(appCtx, TunnelService::class.java).apply { action = "STOP" }
+                        )
+                    }
+                } else requestVpnAndStart()
             },
             enabled = ((isValid && bypassServers.isNotEmpty() && cooldownSeconds == 0) || tunnelRunning),
             modifier = Modifier.fillMaxWidth().height(50.dp),

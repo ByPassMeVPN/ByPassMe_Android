@@ -11,7 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Переключение VPN (xray) ↔ Обход Б/С (WireGuard) — только если другой режим ещё активен.
+ * Переключение VPN (xray) ↔ Обход Б/С (WireGuard).
  */
 object ConnectionCoordinator {
 
@@ -22,9 +22,14 @@ object ConnectionCoordinator {
     private const val STOP_TIMEOUT_MS = 5_000L
     private const val POLL_MS = 100L
 
-    suspend fun prepareForVpn(context: Context) = handoffMutex.withLock {
+    /** Перед запуском Xray VPN — освободить слот (в т.ч. GoBackend после STOP обхода). */
+    suspend fun ensureForXray(context: Context) = handoffMutex.withLock {
         withContext(Dispatchers.IO + NonCancellable) {
-            stopBypass(context)
+            if (isBypassActive()) {
+                stopBypass(context)
+            } else {
+                releaseGoBackend(context.applicationContext)
+            }
             stopVpn(context)
             waitSlotFree()
         }
@@ -38,21 +43,7 @@ object ConnectionCoordinator {
         }
     }
 
-    /** После ручного STOP обхода — GoBackend может ещё держать слот. */
-    suspend fun releaseBypassVpnSlot(context: Context) {
-        withContext(Dispatchers.Main + NonCancellable) {
-            runCatching {
-                context.applicationContext.stopService(
-                    Intent(context.applicationContext, GoBackend.VpnService::class.java)
-                )
-            }
-        }
-        delay(400)
-    }
-
     private suspend fun stopBypass(context: Context) {
-        if (!isBypassActive()) return
-
         val appCtx = context.applicationContext
         TunnelManager.stopAndWait()
         appCtx.startService(
@@ -63,6 +54,7 @@ object ConnectionCoordinator {
                 !TunnelManager.tunnelReady.value &&
                 !WireGuardHelper.isVpnSlotInUse
         }
+        releaseGoBackend(appCtx)
     }
 
     private suspend fun stopVpn(context: Context) {
@@ -76,6 +68,16 @@ object ConnectionCoordinator {
             !XrayManager.running.value && !XrayManager.connecting.value
         }
         XrayVpnService.waitUntilStopped(STOP_TIMEOUT_MS)
+    }
+
+    /** GoBackend держит VPN-слот даже когда WireGuard туннель уже DOWN. */
+    private suspend fun releaseGoBackend(appCtx: Context) {
+        withContext(Dispatchers.Main + NonCancellable) {
+            runCatching {
+                appCtx.stopService(Intent(appCtx, GoBackend.VpnService::class.java))
+            }
+        }
+        waitUntil(2_000) { !WireGuardHelper.isVpnSlotInUse }
     }
 
     private fun isBypassActive(): Boolean =
