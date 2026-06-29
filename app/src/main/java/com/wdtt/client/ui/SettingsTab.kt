@@ -213,7 +213,9 @@ fun BypassTabContent(
                 settingsStore.saveCaptchaMode("rjs")
                 settingsStore.saveCaptchaSolveMethod("auto")
 
-                ConnectionCoordinator.prepareForBypass(appContext)
+                if (XrayManager.running.value || XrayVpnService.isSessionActive) {
+                    ConnectionCoordinator.prepareForBypass(appContext)
+                }
 
                 val intent = Intent(appContext, TunnelService::class.java).apply {
                     action = "START"

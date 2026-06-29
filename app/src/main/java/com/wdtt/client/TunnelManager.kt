@@ -568,7 +568,10 @@ object TunnelManager {
 
         val ctx = lastContext ?: WdttApplication.instance
         withContext(Dispatchers.Main) {
-            (wgHelper ?: WireGuardHelper(ctx).also { wgHelper = it }).releaseVpnCompletely()
+            wgHelper?.releaseVpnCompletely()
+            if (WireGuardHelper.isVpnSlotInUse) {
+                WireGuardHelper(ctx).releaseVpnCompletely()
+            }
         }
         withContext(Dispatchers.IO) {
             killProcess()

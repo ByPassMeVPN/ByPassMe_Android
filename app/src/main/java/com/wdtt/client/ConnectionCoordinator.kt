@@ -2,6 +2,7 @@ package com.wdtt.client
 
 import android.content.Context
 import android.content.Intent
+import com.wireguard.android.backend.GoBackend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -10,8 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Переключение VPN (xray) ↔ Обход Б/С (WireGuard).
- * Без искусственных пауз — только быстрая остановка другого режима, если он ещё активен.
+ * Переключение VPN (xray) ↔ Обход Б/С (WireGuard) — только если другой режим ещё активен.
  */
 object ConnectionCoordinator {
 
@@ -19,8 +19,8 @@ object ConnectionCoordinator {
 
     private val handoffMutex = Mutex()
 
-    private const val STOP_TIMEOUT_MS = 3_000L
-    private const val POLL_MS = 50L
+    private const val STOP_TIMEOUT_MS = 5_000L
+    private const val POLL_MS = 100L
 
     suspend fun prepareForVpn(context: Context) = handoffMutex.withLock {
         withContext(Dispatchers.IO + NonCancellable) {
@@ -38,7 +38,21 @@ object ConnectionCoordinator {
         }
     }
 
+    /** После ручного STOP обхода — GoBackend может ещё держать слот. */
+    suspend fun releaseBypassVpnSlot(context: Context) {
+        withContext(Dispatchers.Main + NonCancellable) {
+            runCatching {
+                context.applicationContext.stopService(
+                    Intent(context.applicationContext, GoBackend.VpnService::class.java)
+                )
+            }
+        }
+        delay(400)
+    }
+
     private suspend fun stopBypass(context: Context) {
+        if (!isBypassActive()) return
+
         val appCtx = context.applicationContext
         TunnelManager.stopAndWait()
         appCtx.startService(
@@ -64,7 +78,11 @@ object ConnectionCoordinator {
         XrayVpnService.waitUntilStopped(STOP_TIMEOUT_MS)
     }
 
-    /** Ждём освобождения слота без фиксированной паузы после. */
+    private fun isBypassActive(): Boolean =
+        TunnelManager.running.value ||
+            TunnelManager.tunnelReady.value ||
+            WireGuardHelper.isVpnSlotInUse
+
     private suspend fun waitSlotFree() {
         waitUntil(STOP_TIMEOUT_MS) {
             !XrayVpnService.isSessionActive &&

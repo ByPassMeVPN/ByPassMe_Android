@@ -148,7 +148,15 @@ object XrayManager {
         lastError.value = ""
         scheduleConnectTimeout(context)
 
-        ConnectionCoordinator.prepareForVpn(context)
+        when {
+            TunnelManager.running.value || TunnelManager.tunnelReady.value || WireGuardHelper.isVpnSlotInUse ->
+                ConnectionCoordinator.prepareForVpn(context)
+            XrayVpnService.isSessionActive || XrayManager.running.value -> {
+                XrayVpnService.stop(context)
+                XrayVpnService.waitUntilStopped(3_000)
+            }
+        }
+
         XrayVpnService.start(context, server.id, configJson)
     }
 
