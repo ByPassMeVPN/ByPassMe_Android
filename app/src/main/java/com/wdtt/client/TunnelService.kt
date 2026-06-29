@@ -85,8 +85,6 @@ class TunnelService : Service() {
                     val handoffDone = intent.getBooleanExtra(ConnectionCoordinator.EXTRA_HANDOFF_DONE, false)
                     if (!handoffDone) {
                         ConnectionCoordinator.prepareForBypass(applicationContext)
-                    } else {
-                        delay(500)
                     }
                     startTunnel(params)
                 }

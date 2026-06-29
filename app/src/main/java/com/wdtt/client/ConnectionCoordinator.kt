@@ -11,7 +11,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * Переключение VPN (xray) ↔ Обход Б/С (WireGuard).
- * На Android одновременно активен только один VpnService.
+ * Без искусственных пауз — только быстрая остановка другого режима, если он ещё активен.
  */
 object ConnectionCoordinator {
 
@@ -19,16 +19,14 @@ object ConnectionCoordinator {
 
     private val handoffMutex = Mutex()
 
-    private const val SLOT_RELEASE_MS = 3_000L
-    private const val SLOT_RELEASE_AFTER_BYPASS_MS = 4_000L
-    private const val STOP_TIMEOUT_MS = 15_000L
-    private const val POLL_MS = 150L
+    private const val STOP_TIMEOUT_MS = 3_000L
+    private const val POLL_MS = 50L
 
     suspend fun prepareForVpn(context: Context) = handoffMutex.withLock {
         withContext(Dispatchers.IO + NonCancellable) {
             stopBypass(context)
             stopVpn(context)
-            waitVpnSlotReleased(SLOT_RELEASE_AFTER_BYPASS_MS)
+            waitSlotFree()
         }
     }
 
@@ -36,15 +34,13 @@ object ConnectionCoordinator {
         withContext(Dispatchers.IO + NonCancellable) {
             stopVpn(context)
             stopBypass(context)
-            waitVpnSlotReleased(SLOT_RELEASE_MS)
+            waitSlotFree()
         }
     }
 
     private suspend fun stopBypass(context: Context) {
         val appCtx = context.applicationContext
-        if (TunnelManager.running.value || TunnelManager.tunnelReady.value || WireGuardHelper.isVpnSlotInUse) {
-            TunnelManager.stopAndWait()
-        }
+        TunnelManager.stopAndWait()
         appCtx.startService(
             Intent(appCtx, TunnelService::class.java).apply { action = "STOP" }
         )
@@ -60,7 +56,6 @@ object ConnectionCoordinator {
         if (!XrayManager.running.value && !XrayManager.connecting.value && !XrayVpnService.isSessionActive) {
             return
         }
-
         XrayManager.connecting.value = false
         XrayVpnService.stop(appCtx)
         waitUntil(STOP_TIMEOUT_MS) {
@@ -69,20 +64,16 @@ object ConnectionCoordinator {
         XrayVpnService.waitUntilStopped(STOP_TIMEOUT_MS)
     }
 
-    private suspend fun waitVpnSlotReleased(releaseDelayMs: Long) {
-        repeat(80) {
-            val xrayFree = !XrayVpnService.isSessionActive &&
+    /** Ждём освобождения слота без фиксированной паузы после. */
+    private suspend fun waitSlotFree() {
+        waitUntil(STOP_TIMEOUT_MS) {
+            !XrayVpnService.isSessionActive &&
                 !XrayManager.running.value &&
-                !XrayManager.connecting.value
-            val bypassFree = !TunnelManager.tunnelReady.value && !TunnelManager.running.value
-            val wgFree = !WireGuardHelper.isVpnSlotInUse
-            if (xrayFree && bypassFree && wgFree) {
-                delay(releaseDelayMs)
-                return
-            }
-            delay(POLL_MS)
+                !XrayManager.connecting.value &&
+                !TunnelManager.tunnelReady.value &&
+                !TunnelManager.running.value &&
+                !WireGuardHelper.isVpnSlotInUse
         }
-        delay(releaseDelayMs)
     }
 
     private suspend fun waitUntil(timeoutMs: Long, condition: () -> Boolean): Boolean {

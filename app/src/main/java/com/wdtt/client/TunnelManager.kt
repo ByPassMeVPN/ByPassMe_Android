@@ -566,22 +566,22 @@ object TunnelManager {
         CaptchaWebViewManager.onTunnelStop()
         ManlCaptchaWebViewManager.cancelCaptcha()
 
+        val ctx = lastContext ?: WdttApplication.instance
         withContext(Dispatchers.Main) {
-            wgHelper?.releaseVpnCompletely()
+            (wgHelper ?: WireGuardHelper(ctx).also { wgHelper = it }).releaseVpnCompletely()
         }
         withContext(Dispatchers.IO) {
             killProcess()
             activeWorkers.value = 0
             currentParams = null
-            repeat(30) {
+            repeat(15) {
                 try {
                     java.net.ServerSocket(9000, 1, java.net.InetAddress.getByName("127.0.0.1")).use { it.close() }
                     return@withContext
                 } catch (_: Exception) {
-                    delay(100)
+                    delay(50)
                 }
             }
-            delay(500)
         }
     }
 

@@ -256,11 +256,10 @@ class XrayVpnService : VpnService() {
     }
 
     private fun configureVpn(): Boolean {
-        for (attempt in 0 until 10) {
+        for (attempt in 0 until 15) {
             if (WireGuardHelper.isVpnSlotInUse) {
-                Log.w(TAG, "WireGuard slot busy, wait before establish (attempt $attempt)")
                 try {
-                    Thread.sleep(800)
+                    Thread.sleep(100)
                 } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     return false
@@ -270,7 +269,7 @@ class XrayVpnService : VpnService() {
             if (attempt > 0) {
                 Log.i(TAG, "configureVpn retry $attempt")
                 try {
-                    Thread.sleep(900L * attempt)
+                    Thread.sleep(200L * attempt)
                 } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     return false
