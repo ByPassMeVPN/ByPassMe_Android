@@ -19,77 +19,69 @@ object ConnectionCoordinator {
 
     private val handoffMutex = Mutex()
 
-    private const val STOP_TIMEOUT_MS = 5_000L
+    private const val STOP_TIMEOUT_MS = 8_000L
     private const val POLL_MS = 100L
 
-    /** Перед запуском Xray VPN — освободить слот (в т.ч. GoBackend после STOP обхода). */
+    /** Перед запуском Xray VPN — гарантированно освободить VPN-слот. */
     suspend fun ensureForXray(context: Context) = handoffMutex.withLock {
+        val appCtx = context.applicationContext
         withContext(Dispatchers.IO + NonCancellable) {
-            if (isBypassActive()) {
-                stopBypass(context)
-            } else {
-                releaseGoBackend(context.applicationContext)
+            if (TunnelManager.running.value || TunnelManager.tunnelReady.value) {
+                stopBypassTransport(appCtx)
             }
-            stopVpn(context)
-            waitSlotFree()
+            releaseWireGuardSlot(appCtx)
+            stopActiveXray(appCtx)
+            waitVpnSlotFree()
         }
     }
 
     suspend fun prepareForBypass(context: Context) = handoffMutex.withLock {
+        val appCtx = context.applicationContext
         withContext(Dispatchers.IO + NonCancellable) {
-            stopVpn(context)
-            stopBypass(context)
-            waitSlotFree()
+            stopActiveXray(appCtx)
+            stopBypassTransport(appCtx)
+            waitVpnSlotFree()
         }
     }
 
-    private suspend fun stopBypass(context: Context) {
-        val appCtx = context.applicationContext
+    private suspend fun stopBypassTransport(appCtx: Context) {
         TunnelManager.stopAndWait()
         appCtx.startService(
             Intent(appCtx, TunnelService::class.java).apply { action = "STOP" }
         )
         waitUntil(STOP_TIMEOUT_MS) {
             !TunnelManager.running.value &&
-                !TunnelManager.tunnelReady.value &&
-                !WireGuardHelper.isVpnSlotInUse
+                !TunnelManager.tunnelReady.value
         }
-        releaseGoBackend(appCtx)
+        releaseWireGuardSlot(appCtx)
     }
 
-    private suspend fun stopVpn(context: Context) {
-        val appCtx = context.applicationContext
-        if (!XrayManager.running.value && !XrayManager.connecting.value && !XrayVpnService.isSessionActive) {
-            return
-        }
+    /** Только если Xray реально держит сессию — не трогаем «connecting» без TUN. */
+    private suspend fun stopActiveXray(appCtx: Context) {
+        if (!XrayVpnService.isSessionActive && !XrayManager.running.value) return
         XrayManager.connecting.value = false
         XrayVpnService.stop(appCtx)
         waitUntil(STOP_TIMEOUT_MS) {
-            !XrayManager.running.value && !XrayManager.connecting.value
+            !XrayManager.running.value && !XrayVpnService.isSessionActive
         }
         XrayVpnService.waitUntilStopped(STOP_TIMEOUT_MS)
     }
 
-    /** GoBackend держит VPN-слот даже когда WireGuard туннель уже DOWN. */
-    private suspend fun releaseGoBackend(appCtx: Context) {
+    /** WireGuard DOWN + stop GoBackend.VpnService — иначе слот остаётся занят. */
+    private suspend fun releaseWireGuardSlot(appCtx: Context) {
         withContext(Dispatchers.Main + NonCancellable) {
+            WireGuardHelper(appCtx).releaseVpnCompletely()
             runCatching {
                 appCtx.stopService(Intent(appCtx, GoBackend.VpnService::class.java))
             }
         }
-        waitUntil(2_000) { !WireGuardHelper.isVpnSlotInUse }
+        waitUntil(STOP_TIMEOUT_MS) { !WireGuardHelper.isVpnSlotInUse }
     }
 
-    private fun isBypassActive(): Boolean =
-        TunnelManager.running.value ||
-            TunnelManager.tunnelReady.value ||
-            WireGuardHelper.isVpnSlotInUse
-
-    private suspend fun waitSlotFree() {
+    private suspend fun waitVpnSlotFree() {
         waitUntil(STOP_TIMEOUT_MS) {
             !XrayVpnService.isSessionActive &&
                 !XrayManager.running.value &&
-                !XrayManager.connecting.value &&
                 !TunnelManager.tunnelReady.value &&
                 !TunnelManager.running.value &&
                 !WireGuardHelper.isVpnSlotInUse

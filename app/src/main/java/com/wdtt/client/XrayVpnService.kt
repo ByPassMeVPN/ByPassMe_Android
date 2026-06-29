@@ -19,9 +19,11 @@ import android.os.StrictMode
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import go.Seq
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import com.wireguard.android.backend.GoBackend
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
@@ -257,7 +259,11 @@ class XrayVpnService : VpnService() {
     }
 
     private fun configureVpn(): Boolean {
-        releaseGoBackendSlot()
+        runBlocking {
+            withContext(Dispatchers.Main) {
+                WireGuardHelper(this@XrayVpnService).releaseVpnCompletely()
+            }
+        }
         for (attempt in 0 until 15) {
             if (WireGuardHelper.isVpnSlotInUse) {
                 try {
@@ -321,8 +327,13 @@ class XrayVpnService : VpnService() {
     }
 
     private fun releaseGoBackendSlot() {
-        runCatching {
-            stopService(Intent(this, GoBackend.VpnService::class.java))
+        runBlocking {
+            withContext(Dispatchers.Main) {
+                WireGuardHelper(this@XrayVpnService).releaseVpnCompletely()
+                runCatching {
+                    stopService(Intent(this@XrayVpnService, GoBackend.VpnService::class.java))
+                }
+            }
         }
     }
 

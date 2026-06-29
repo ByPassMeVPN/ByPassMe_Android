@@ -144,11 +144,11 @@ object XrayManager {
         val server = list[idx]
         val configJson = XrayConfigBuilder.build(server, uuid)
 
+        ConnectionCoordinator.ensureForXray(context)
+
         connecting.value = true
         lastError.value = ""
         scheduleConnectTimeout(context)
-
-        ConnectionCoordinator.ensureForXray(context)
         XrayVpnService.start(context, server.id, configJson)
     }
 
