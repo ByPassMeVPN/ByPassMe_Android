@@ -57,6 +57,8 @@ import com.wdtt.client.ConnectionCoordinator
 import com.wdtt.client.SettingsStore
 import com.wdtt.client.TunnelManager
 import com.wdtt.client.TunnelService
+import com.wdtt.client.XrayManager
+import com.wdtt.client.XrayVpnService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
