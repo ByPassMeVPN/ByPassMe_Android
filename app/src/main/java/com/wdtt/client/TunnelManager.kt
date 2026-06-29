@@ -559,7 +559,6 @@ object TunnelManager {
     suspend fun stopAndWait() {
         isCaptchaSolving = false
         tunnelReady.value = false
-        running.value = false
         watchdogJob?.cancel()
         readerJob?.cancel()
 
@@ -580,11 +579,13 @@ object TunnelManager {
             repeat(15) {
                 try {
                     java.net.ServerSocket(9000, 1, java.net.InetAddress.getByName("127.0.0.1")).use { it.close() }
+                    running.value = false
                     return@withContext
                 } catch (_: Exception) {
                     delay(50)
                 }
             }
+            running.value = false
         }
     }
 

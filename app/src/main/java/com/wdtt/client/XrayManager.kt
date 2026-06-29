@@ -144,7 +144,17 @@ object XrayManager {
         val server = list[idx]
         val configJson = XrayConfigBuilder.build(server, uuid)
 
-        ConnectionCoordinator.ensureForXray(context)
+        when {
+            TunnelManager.running.value || TunnelManager.tunnelReady.value || WireGuardHelper.isVpnSlotInUse ->
+                ConnectionCoordinator.prepareForVpn(context)
+            else ->
+                ConnectionCoordinator.releaseBypassVpnSlot(context)
+        }
+
+        if (XrayVpnService.isSessionActive || XrayManager.running.value) {
+            XrayVpnService.stop(context)
+            XrayVpnService.waitUntilStopped(3_000)
+        }
 
         connecting.value = true
         lastError.value = ""
