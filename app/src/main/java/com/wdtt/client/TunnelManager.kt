@@ -68,43 +68,42 @@ object TunnelManager {
     // Добавляем лог с Деплоя
     fun addDeployErrorLog(message: String) {
         val hash = message.hashCode().toString()
-        updateLog("deploy_err_$hash", "[ДЕПЛОЙ] $message", 99, true)
+        updateLog("deploy_err_$hash", "[ДЕПЛОЙ] $message", 99, true, toAppLog = true)
     }
 
     fun addDeploySuccessLog(message: String) {
         val hash = message.hashCode().toString() + System.currentTimeMillis()
-        updateLog("deploy_ok_$hash", message, 2, false)
+        updateLog("deploy_ok_$hash", message, 2, false, toAppLog = true)
     }
 
-    private fun updateLog(key: String, message: String, priority: Int, isError: Boolean = false) {
+    private fun updateLog(
+        key: String,
+        message: String,
+        priority: Int,
+        isError: Boolean = false,
+        toAppLog: Boolean = isError
+    ) {
+        var isNewEntry = false
         if (isError) {
-            val list = logs.value
-            if (list.none { it.key == key }) {
-                unreadErrorCount.value++
-            }
-            AppLogger.bypassErr(message)
-        } else {
-            AppLogger.bypass(message)
+            unreadErrorCount.update { it + 1 }
         }
         logs.update { currentList ->
             val current = currentList.toMutableList()
             val index = current.indexOfFirst { it.key == key }
 
             if (index != -1) {
-                // Обновляем текст и счётчик НА МЕСТЕ
                 val entry = current[index]
                 current[index] = entry.copy(count = entry.count + 1, message = message, priority = priority, isError = isError)
             } else {
-                // Новая запись
+                isNewEntry = true
                 current.add(LogEntry(key, message, 1, priority, isError))
             }
 
-            // Сортировка: по приоритету (наименьший сверху), затем ошибки
-            // Приоритеты: Основной=1, Капча=5, Готов=10, Статы=100, Ошибки=200
             val sorted = current.sortedWith(compareBy({ it.priority }, { if (it.isError) 1 else 0 }, { it.key }))
-
-            // Лимит 100 записей
             if (sorted.size > 100) sorted.takeLast(100) else sorted
+        }
+        if (toAppLog && isNewEntry) {
+            if (isError) AppLogger.bypassErr(message) else AppLogger.bypass(message)
         }
     }
 
@@ -153,7 +152,7 @@ object TunnelManager {
                 val totalWorkers = params.workersPerHash.coerceIn(1, 128) // Максимум ограничивается UI (80), но тут ставим хард-лимит побольше на случай запаса
                 
                 val hashMode = if (activeHashIndex == 0) "Основной" else "Запасной"
-                updateLog("config_info", "[$hashMode] Хешей=$hashCount, Потоков=$totalWorkers", 1)
+                updateLog("config_info", "[$hashMode] Хешей=$hashCount, Потоков=$totalWorkers", 1, toAppLog = true)
 
 
                 // CRITICAL FIX: Use nativeLibraryDir with extractNativeLibs="true"
@@ -196,7 +195,12 @@ object TunnelManager {
                 cmd.add("-vk-anon-path")
                 cmd.add(params.vkAnonPath)
 
-                AppLogger.bypass("Команда: ${cmd.joinToString(" ")}")
+                updateLog(
+                    "cmd",
+                    "Запуск libclient.so (пир ${params.peer}, $totalWorkers потоков, ${params.vkAnonPath})",
+                    1,
+                    toAppLog = true
+                )
 
                 val pb = ProcessBuilder(cmd)
                 pb.directory(context.filesDir) // Устанавливаем рабочую директорию
@@ -229,9 +233,6 @@ object TunnelManager {
                 var lastResetTime = System.currentTimeMillis()
 
                 reader.forEachLine { line ->
-                    // Пишем RAW вывод процесса в AppLogger для диагностики
-                    AppLogger.bypassDbg("[raw] $line")
-
                     // Периодический сброс счетчиков ошибок (раз в 60 сек)
                     val now = System.currentTimeMillis()
                     if (now - lastResetTime > 60000) {
@@ -368,7 +369,7 @@ object TunnelManager {
                                 isErr -> "captcha_wv_err"
                                 else -> "captcha_wv_go_other"
                             }
-                            updateLog(stableKey, "[КАПЧА WBV] $text", 5, isErr)
+                            updateLog(stableKey, "[КАПЧА WBV] $text", 5, isErr, toAppLog = isErr)
                         }
 
                         lineTrim.contains("Старт") || lineTrim.contains("Ожидайте") ->
@@ -376,19 +377,19 @@ object TunnelManager {
                         lineTrim.contains("Креды получены") ->
                             updateLog("creds_lifetime", lineTrim, 2, false)
                         lineTrim.contains("Креды OK") || lineTrim.contains("Первые креды") ->
-                            updateLog("creds_ok", "[ВК] Учетные данные проверены ✓", 2, false)
+                            updateLog("creds_ok", "[ВК] Учетные данные проверены ✓", 2, toAppLog = true)
                         lineTrim.contains("Решаю VK Smart Captcha") ->
-                            updateLog("captcha_start", "[КАПЧА] Решение капчи...", 5, false)
+                            updateLog("captcha_start", "[КАПЧА] Решение капчи...", 5, toAppLog = true)
                         lineTrim.contains("Smart Captcha решена") ->
-                            updateLog("captcha_done", "[КАПЧА] Капча решена ✓", 5, false)
+                            updateLog("captcha_done", "[КАПЧА] Капча решена ✓", 5, toAppLog = true)
                         lineTrim.contains("капча не решена") || lineTrim.contains("ошибка решения капчи") ->
-                            updateLog("captcha_failed", "[КАПЧА] Ошибка решения капчи", 5, true)
+                            updateLog("captcha_failed", "[КАПЧА] Ошибка решения капчи", 5, true, toAppLog = true)
                         lineTrim.contains("Relay:") ->
                             updateLog("dtls_start", "[DTLS] Рукопожатие (Handshake)...", 1, false)
-                        lineTrim.contains("DTLS ОК") ->
+                        lineTrim.contains("DTLS ОК") || lineTrim.contains("Соединение установлено") ->
                             updateLog("dtls_ok", "[DTLS] Соединение установлено ✓", 1, false)
-                        lineTrim.contains("Активна ✓") ->
-                            updateLog("ready", "[READY] Туннель готов к работе ✓", 2, false)
+                        lineTrim.contains("Активна ✓") || lineTrim.contains("Туннель готов к работе") ->
+                            updateLog("ready", "[READY] Туннель готов к работе ✓", 2, toAppLog = true)
                         
                         // Ошибки (в конец)
                         isError -> {
@@ -418,8 +419,8 @@ object TunnelManager {
                             scope.launch(Dispatchers.Main) {
                                 try {
                                     wgHelper?.startTunnel(configStr)
-                                    tunnelReady.value = true // WireGuard поднят!
-                                    updateLog("ready", "[READY] Туннель готов к работе ✓", 2, false)
+                                    tunnelReady.value = true
+                                    updateLog("ready", "[READY] Туннель готов к работе ✓", 2, toAppLog = true)
                                 } catch (e: Exception) {
                                     updateLog("vpn_start_error", "Ошибка запуска VPN: ${e.readableMessage()}", 99, true)
                                 }
@@ -515,7 +516,7 @@ object TunnelManager {
     fun restartTransport() {
         val params = currentParams ?: return
         val context = lastContext ?: return
-        updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта из-за смены сети...", 50, false)
+        updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта из-за смены сети...", 50, toAppLog = true)
         killProcess() // Только убиваем процесс, running не трогаем!
         scope.launch {
             delay(1500)
@@ -639,7 +640,7 @@ object TunnelManager {
                 "auto", "manual", "selected" -> solveAutoWebViewCaptcha(ctx, redirectUri, sessionToken)
                 else -> solveAutoWebViewCaptcha(ctx, redirectUri, sessionToken)
             }
-            updateLog("captcha_wv_step_4", "[КАПЧА WBV] Капча решена ✓", 5, false)
+            updateLog("captcha_wv_step_4", "[КАПЧА WBV] Капча решена ✓", 5, toAppLog = true)
             writeCaptchaResult(token)
         } catch (e: IllegalStateException) {
             val errorMsg = e.message ?: "WV state error"

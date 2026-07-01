@@ -39,7 +39,8 @@ fun AppLogsTab() {
     var filter by remember { mutableStateOf<LogSource?>(null) }
 
     val filtered = remember(entries, filter) {
-        if (filter == null) entries else entries.filter { it.source == filter }
+        val list = if (filter == null) entries else entries.filter { it.source == filter }
+        if (filter == null) list.filter { it.level != LogLevel.DEBUG } else list
     }
 
     // Автоскролл вниз при новых логах

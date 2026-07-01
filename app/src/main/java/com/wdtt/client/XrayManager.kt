@@ -40,6 +40,7 @@ object XrayManager {
             } catch (e: Exception) {
                 connecting.value = false
                 lastError.value = e.message ?: "Ошибка запуска VPN"
+                AppLogger.vpnErr(lastError.value)
             }
         }
     }
@@ -60,6 +61,7 @@ object XrayManager {
             } catch (e: Exception) {
                 connecting.value = false
                 lastError.value = e.message ?: "Ошибка смены сервера"
+                AppLogger.vpnErr(lastError.value)
             }
         }
     }
@@ -75,11 +77,13 @@ object XrayManager {
                         running.value = true
                         connecting.value = false
                         lastError.value = ""
+                        AppLogger.vpn("VPN подключён ✓")
                     }
                     XrayVpnService.BROADCAST_STOPPED -> {
                         cancelConnectTimeout()
                         running.value = false
                         connecting.value = false
+                        AppLogger.vpn("VPN отключён")
                     }
                     XrayVpnService.BROADCAST_ERROR -> {
                         cancelConnectTimeout()
@@ -87,6 +91,7 @@ object XrayManager {
                         connecting.value = false
                         lastError.value = intent.getStringExtra(XrayVpnService.EXTRA_ERROR_MSG)
                             ?: "Неизвестная ошибка"
+                        AppLogger.vpnErr(lastError.value)
                     }
                 }
             }
@@ -130,11 +135,13 @@ object XrayManager {
         val list = VpnServerManager.servers.value
         if (list.isEmpty()) {
             lastError.value = "Список серверов пуст"
+            AppLogger.vpnErr(lastError.value)
             return@withContext
         }
         val uuid = SettingsStore(context).vpnUuid.first().trim()
         if (uuid.isEmpty()) {
             lastError.value = "UUID подписки не найден"
+            AppLogger.vpnErr(lastError.value)
             return@withContext
         }
 
@@ -158,6 +165,7 @@ object XrayManager {
 
         connecting.value = true
         lastError.value = ""
+        AppLogger.vpn("Подключение: ${server.name}")
         scheduleConnectTimeout(context)
         XrayVpnService.start(context, server.id, configJson)
     }
@@ -165,6 +173,9 @@ object XrayManager {
     private suspend fun stopVpn(context: Context) {
         cancelConnectTimeout()
         connecting.value = false
+        if (running.value || XrayVpnService.isSessionActive) {
+            AppLogger.vpn("Отключение VPN...")
+        }
         XrayVpnService.stop(context)
     }
 
@@ -180,12 +191,14 @@ object XrayManager {
         val uuid = SettingsStore(context).vpnUuid.first().trim()
         if (uuid.isEmpty()) {
             lastError.value = "UUID подписки не найден"
+            AppLogger.vpnErr(lastError.value)
             return@withContext
         }
 
         connecting.value = true
-        scheduleConnectTimeout(context)
         val server = list[serverIndex]
+        AppLogger.vpn("Смена сервера: ${server.name}")
+        scheduleConnectTimeout(context)
         val configJson = XrayConfigBuilder.build(server, uuid)
         XrayVpnService.restart(context, server.id, configJson)
     }
@@ -197,6 +210,7 @@ object XrayManager {
             if (connecting.value && !running.value) {
                 connecting.value = false
                 lastError.value = "Таймаут подключения VPN"
+                AppLogger.vpnErr(lastError.value)
                 XrayVpnService.stop(context.applicationContext)
             }
         }
