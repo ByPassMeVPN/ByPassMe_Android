@@ -13,34 +13,52 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 )
 
-var (
-	vkAppID     atomic.Value // string
-	vkAppSecret atomic.Value // string
-	captchaMode atomic.Value // string — "reverse_js" или "webview"
-)
+// CaptchaResultChan — канал для получения токена капчи из внешнего решателя (WebView)
+var CaptchaResultChan = make(chan string, 1)
 
-// CaptchaSolver — канал для получения токена капчи из внешнего решателя (WebView)
-// Формат: "token:<success_token>" или "error:<message>"
-var CaptchaResultCh = make(chan string, 1)
+var captchaModeValue atomic.Value
 
-// drainCaptchaResult удаляет устаревший результат капчи из канала (если остался)
+func init() {
+	captchaModeValue.Store("auto")
+}
+
+func normalizeCaptchaMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "auto", "rjs", "wv":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
+	}
+}
+
+func setCaptchaMode(mode string) string {
+	normalized := normalizeCaptchaMode(mode)
+	captchaModeValue.Store(normalized)
+	return normalized
+}
+
+func getCaptchaMode() string {
+	mode, _ := captchaModeValue.Load().(string)
+	if mode == "" {
+		return "auto"
+	}
+	return mode
+}
+
+// drainCaptchaResult удаляет устаревший результат капчи из канала
 func drainCaptchaResult() {
 	select {
-	case <-CaptchaResultCh:
+	case <-CaptchaResultChan:
 	default:
 	}
 }
 
-func init() {
-	vkAppID.Store("6287487")
-	vkAppSecret.Store("QbYic1K3lEV5kTGiqlq2")
-}
-
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+
+	setupGlobalResolver()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -64,9 +82,9 @@ func main() {
 		}
 	}()
 
-	var pauseFlag int32 // 0 = активен, 1 = пауза (Doze-mode)
+	var pauseFlag int32
 
-	// STDIN для PAUSE/RESUME/STOP (Doze-mode) и CAPTCHA_RESULT (WebView mode)
+	// STDIN для PAUSE/RESUME/STOP и CAPTCHA_RESULT
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
@@ -83,13 +101,12 @@ func main() {
 				cancel()
 				return
 			case strings.HasPrefix(line, "CAPTCHA_RESULT|"):
-				// Формат: CAPTCHA_RESULT|token или CAPTCHA_RESULT|error:msg
 				result := strings.TrimPrefix(line, "CAPTCHA_RESULT|")
-				// Дренируем старый результат, если он не был прочитан
 				drainCaptchaResult()
-				// Гарантированная запись нового результата
-				CaptchaResultCh <- result
+				CaptchaResultChan <- result
 				log.Printf("[КАПЧА] Результат от Kotlin записан в канал")
+			case strings.HasPrefix(line, "TURN_CREDS|"):
+				handleTurnCredsStdinLine(line)
 			}
 		}
 	}()
@@ -98,31 +115,29 @@ func main() {
 	port := flag.String("port", "", "переопределить порт TURN")
 	listen := flag.String("listen", "127.0.0.1:9000", "локальный адрес")
 	vkHash := flag.String("vk", "", "хеши VK-звонков (через запятую)")
-	secondaryHash := flag.String("vk2", "", "запасной VK хеш")
 	peerAddr := flag.String("peer", "", "адрес:порт VPS сервера")
-	numW := flag.Int("n", 18, "количество воркеров (кратно 9)")
-	useTCP := flag.Bool("tcp", false, "TURN через TCP")
-	useUDP := flag.Bool("udp", false, "TURN через UDP")
-	splitTunnel := flag.Bool("split", false, "split tunneling")
-	sni := flag.String("sni", "", "SNI для DTLS")
-	noDns := flag.Bool("nodns", false, "отключить DNS Яндекса")
-
-	appID := flag.String("vk-app-id", "6287487", "VK App ID")
-	appSecret := flag.String("vk-app-secret", "QbYic1K3lEV5kTGiqlq2", "VK App Secret")
+	numW := flag.Int("n", 24, "количество воркеров (кратно 12)")
+	pingOnly := flag.Bool("ping-only", false, "запустить только замер задержки и выйти")
 
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
-	userAgent := flag.String("user-agent", "", "User-Agent строка устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
-	captchaModeFlag := flag.String("captcha-mode", "rjs", "режим капчи: rjs или wv")
+	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
+	vkAuthMode := flag.String("vk-auth", "anonymous", "режим VK авторизации (account/anonymous)")
+	vkAnonPath := flag.String("vk-anon-path", "vkcalls", "анонимный путь VK TURN (vkcalls/legacy)")
+	vkCredsFile := flag.String("vk-creds-file", "", "файл с TURN кредами от аккаунта VK")
 
 	flag.Parse()
+	activeCaptchaMode := setCaptchaMode(*captchaMode)
+	activeVkAuthMode := setVkAuthMode(*vkAuthMode)
+	activeVkAnonPath := setVkAnonPath(*vkAnonPath)
 
-	vkAppID.Store(*appID)
-	vkAppSecret.Store(*appSecret)
-	captchaMode.Store(*captchaModeFlag)
-	SetCaptchaModeEnv(*captchaModeFlag)
-	noDnsFlag.Store(*noDns)
-	SetUserAgent(*userAgent)
+	if err := loadVkCredsFile(*vkCredsFile); err != nil {
+		log.Fatalf("[КЛИЕНТ] Ошибка чтения vk-creds-file: %v", err)
+	}
+	log.Printf("[КЛИЕНТ] VK auth mode: %s", activeVkAuthMode)
+	if activeVkAuthMode == "anonymous" {
+		log.Printf("[КЛИЕНТ] VK anon path: %s", activeVkAnonPath)
+	}
 
 	if *peerAddr == "" || *vkHash == "" {
 		log.Fatal("[КЛИЕНТ] Нужны -peer и -vk")
@@ -138,31 +153,68 @@ func main() {
 		log.Fatal("[КЛИЕНТ] Нет хешей VK")
 	}
 
-	// Протокол по умолчанию
-	if !*useTCP && !*useUDP {
-		*useTCP = true
+	if *connPassword == "" {
+		log.Fatal("[КЛИЕНТ] Нужен -password: WRAP ключ теперь выводится из пароля подключения")
+	}
+
+	// WRAP key
+	wrapKey, err := deriveWrapKey(*connPassword)
+	if err != nil {
+		log.Fatalf("[КЛИЕНТ] WRAP key derive: %v", err)
 	}
 
 	// Лимит воркеров
-	maxWorkers := 72
+	maxWorkers := 108
 	if *numW > maxWorkers {
 		*numW = maxWorkers
 	}
-	if *numW < workersPerGroup {
-		*numW = workersPerGroup
+	if getVkAuthMode() == "account" {
+		const accountMaxWorkers = 4
+		if *numW > accountMaxWorkers {
+			log.Printf("[КЛИЕНТ] Аккаунт VK: TURN-квота ~%d relay на сессию, потоков %d -> %d", accountMaxWorkers, *numW, accountMaxWorkers)
+			*numW = accountMaxWorkers
+		}
+		if *numW < 1 {
+			*numW = 1
+		}
+	} else {
+		if *numW < workersPerGroup {
+			*numW = workersPerGroup
+		}
+		*numW = (*numW / workersPerGroup) * workersPerGroup
 	}
-	*numW = (*numW / workersPerGroup) * workersPerGroup
 
 	tp := &TurnParams{
-		Host:          *host,
-		Port:          *port,
-		Hashes:        hashes,
-		SecondaryHash: strings.TrimSpace(*secondaryHash),
-		Sni:           *sni,
+		Host:    *host,
+		Port:    *port,
+		Hashes:  hashes,
+		WrapKey: wrapKey,
 	}
 
-	// Слушаем локально
-	localConn, err := net.ListenPacket("udp", *listen)
+	if *pingOnly {
+		var lastErr error
+		for i, hash := range hashes {
+			user, pass, turnURLs, err := GetCreds(ctx, hash, 999)
+			if err != nil {
+				lastErr = fmt.Errorf("GetCreds hash %d: %v", i, err)
+				continue
+			}
+			creds := &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: 999}
+			rtt, err := RunPing(ctx, tp, peer, creds)
+			if err != nil {
+				lastErr = fmt.Errorf("RunPing hash %d: %v", i, err)
+				continue
+			}
+			fmt.Printf("PING_RESULT|%d\n", rtt)
+			os.Exit(0)
+		}
+		// Если все хеши провалились
+		fmt.Printf("PING_ERROR|All hashes failed. Last error: %v\n", lastErr)
+		os.Exit(1)
+	}
+
+	// Слушаем локально (SO_REUSEADDR — быстрый перезапуск без «address already in use»)
+	localConn, err := listenUDP(*listen)
 	if err != nil {
 		log.Fatalf("[КЛИЕНТ] Ошибка слушателя %s: %v", *listen, err)
 	}
@@ -178,20 +230,32 @@ func main() {
 		localPort = "9000"
 	}
 
-	numGroups := *numW / workersPerGroup
+	numGroups := (*numW + workersPerGroup - 1) / workersPerGroup
+
+	wrapStatus := "OFF"
+	if len(wrapKey) == wrapKeyLen {
+		wrapStatus = "ON (password HKDF + RTP AEAD)"
+	}
+
+	captchaStatus := "AUTO: Go v2 x2 -> WBV Auto x2 -> Go v2 x1 -> Manual WBV"
+	switch activeCaptchaMode {
+	case "wv":
+		captchaStatus = "WBV selected in Android"
+	case "rjs":
+		captchaStatus = "RJS Go v2 with WBV Auto fallback"
+	}
 
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
-	log.Printf("[КЛИЕНТ] VK App: %s", *appID)
+	log.Printf("[КЛИЕНТ] VK Creds: 2 stable app_id с циклическим fallback")
+	log.Printf("[КЛИЕНТ] TLS: Chrome 146 fingerprint")
 	log.Printf("[КЛИЕНТ] Воркеров: %d (групп: %d, по %d)", *numW, numGroups, workersPerGroup)
 	log.Printf("[КЛИЕНТ] Хешей: %d", len(hashes))
 	log.Printf("[КЛИЕНТ] Слушаю: %s | Пир: %s", *listen, *peerAddr)
-	proto := "TCP"
-	if *useUDP {
-		proto = "UDP"
-	}
-	log.Printf("[КЛИЕНТ] Протокол: %s", proto)
+	log.Printf("[КЛИЕНТ] Протокол: UDP")
+	log.Printf("[КЛИЕНТ] WRAP: %s", wrapStatus)
+	log.Printf("[WRAP] Ключ выведен из пароля, режим RTP AEAD активен")
 	log.Printf("[КЛИЕНТ] Device ID: %s", *deviceID)
-	log.Printf("[КЛИЕНТ] Обход капчи: %s", captchaMode.Load().(string))
+	log.Printf("[КЛИЕНТ] Captcha: %s", captchaStatus)
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
 
 	stats := NewStats()
@@ -225,9 +289,6 @@ func main() {
 					}
 				}
 				finalConf = strings.Join(newLines, "\n")
-			}
-			if *splitTunnel {
-				finalConf = ModifyConfigForSplitTunnel(finalConf, peer.IP)
 			}
 			fmt.Println()
 			fmt.Println("╔══════════════ WireGuard Конфиг ══════════════╗")
@@ -264,25 +325,34 @@ func main() {
 			prevWaitReady = ch
 		}
 
-		ids := make([]int, workersPerGroup)
+		startIdx := g * workersPerGroup
+		endIdx := startIdx + workersPerGroup
+		if endIdx > *numW {
+			endIdx = *numW
+		}
+		groupSize := endIdx - startIdx
+		if groupSize <= 0 {
+			continue
+		}
+
+		ids := make([]int, groupSize)
 		for i := range ids {
 			ids[i] = workerIDCounter
 			workerIDCounter++
 		}
 
 		gID := g + 1
-		cycle := time.Duration(defaultCycleSecs) * time.Second
 		var cc chan<- string
 		if isFirst {
 			cc = configCh
 		}
 
 		wg.Add(1)
-		go func(groupID int, cycleDir time.Duration, isFirstGroup bool, configChan chan<- string, workerIds []int, startHashIndex int, waitR <-chan struct{}, sigR chan<- struct{}) {
+		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, startHashIndex int, waitR <-chan struct{}, sigR chan<- struct{}) {
 			defer wg.Done()
-			WorkerGroup(ctx, groupID, startHashIndex, tp, peer, disp, localPort, *useUDP,
-				isFirstGroup, configChan, workerIds, cycleDir, &pauseFlag, *deviceID, *connPassword, stats, waitR, sigR)
-		}(gID, cycle, isFirst, cc, ids, g, myWaitReady, mySignalReady)
+			WorkerGroup(ctx, groupID, startHashIndex, tp, peer, disp, localPort,
+				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, waitR, sigR)
+		}(gID, isFirst, cc, ids, g, myWaitReady, mySignalReady)
 	}
 
 	wg.Wait()

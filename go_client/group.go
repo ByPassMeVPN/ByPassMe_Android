@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math/rand"
 	"net"
@@ -12,7 +11,6 @@ import (
 	"time"
 )
 
-var groupAuthMutex sync.Mutex
 
 const (
 	workersPerGroup  = 9
@@ -20,7 +18,7 @@ const (
 )
 
 // WorkerGroup:
-// бесшовная ротация: получить новые креды → запустить новый батч → убить старый.
+// Запускает 9 потоков с одними кредами. Ротации нет — работает до смерти воркеров.
 func WorkerGroup(
 	ctx context.Context,
 	groupID int,
@@ -29,11 +27,9 @@ func WorkerGroup(
 	peer *net.UDPAddr,
 	d *Dispatcher,
 	localPort string,
-	useUDP bool,
 	getConfig bool,
 	configCh chan<- string,
 	workerIDs []int,
-	cycleDuration time.Duration,
 	pauseFlag *int32,
 	deviceID, password string,
 	stats *Stats,
@@ -50,290 +46,260 @@ func WorkerGroup(
 		}
 	}
 
-	cycleNumber := 0
 	var configSent int32
 	if !getConfig {
 		configSent = 1
 	}
 
-	// Предыдущий батч
-	var prevCancel context.CancelFunc
-	var prevDoneChs []chan struct{}
-	var commonSignalOnce sync.Once
-
-	killBatch := func() {
-		if prevCancel != nil {
-			prevCancel()
-			for _, ch := range prevDoneChs {
-				select {
-				case <-ch:
-				case <-time.After(3 * time.Second):
-				}
-			}
-			prevCancel = nil
-			prevDoneChs = nil
-		}
-	}
-	defer killBatch()
-
-	for {
+	// Doze-mode пауза
+	for atomic.LoadInt32(pauseFlag) != 0 {
 		if ctx.Err() != nil {
 			return
 		}
+		time.Sleep(1 * time.Second)
+	}
 
-		// Doze-mode пауза: убиваем воркеров и ждём RESUME
-		if atomic.LoadInt32(pauseFlag) != 0 {
-			killBatch()
-			log.Printf("[ГРУППА #%d] Пауза (Doze)", groupID)
+	hash := tp.Hashes[hashIndex%len(tp.Hashes)]
+	shortHash := hash
+	if len(shortHash) > 8 {
+		shortHash = shortHash[:8]
+	}
+	log.Printf("[ГРУППА #%d] Запрос кредов (хеш: %s...)", groupID, shortHash)
+
+	credStreamID := groupID * 100
+	user, pass, turnURLs, err := GetCreds(ctx, hash, credStreamID)
+	var creds *Credentials
+	if err == nil {
+		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
+	} else {
+		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
+		return
+	}
+
+	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров", groupID, creds.TurnURLs, len(workerIDs))
+
+	var configRequestInFlight int32
+	var wg sync.WaitGroup
+	var credsMu sync.RWMutex
+	var refreshMu sync.Mutex
+	var lastCredRefresh atomic.Int64
+
+	refreshCreds := func(reason string) bool {
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+
+		now := time.Now().Unix()
+		last := lastCredRefresh.Load()
+		if last > 0 && now-last < 15 {
+			log.Printf("[TURN] Креды уже обновлялись %d сек назад, ждём следующий retry (%s)", now-last, reason)
+			return true
+		}
+
+		getStreamCache(credStreamID).invalidate(credStreamID)
+		if getVkAuthMode() == "account" {
+			invalidateInjectedTurnCreds(hash)
+		}
+		u, p, urls, refreshErr := GetCreds(ctx, hash, credStreamID)
+		if refreshErr != nil {
+			log.Printf("[TURN] Не удалось обновить креды после %s: %v", reason, refreshErr)
+			return false
+		}
+
+		credsMu.Lock()
+		creds = &Credentials{User: u, Pass: p, TurnURLs: urls, CacheStreamID: credStreamID}
+		credsMu.Unlock()
+		lastCredRefresh.Store(time.Now().Unix())
+		log.Printf("[TURN] Креды обновлены после %s, TURN urls=%d", reason, len(urls))
+		return true
+	}
+
+	// Сигнализируем следующей группе, что мы успешно запустились (креды получены + 2 сек форы)
+	if signalReady != nil {
+		go func() {
+			time.Sleep(2000 * time.Millisecond)
+			close(signalReady)
+			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
+		}()
+	}
+
+	for i, wid := range workerIDs {
+		wg.Add(1)
+
+		// Stagger: 500мс между воркерами
+		workerDelay := time.Duration(i) * 500 * time.Millisecond
+
+		go func(wid int, delay time.Duration) {
+			defer wg.Done()
+
+			if delay > 0 {
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return
+				}
+			}
+
+			shouldGetConfig := getConfig
+			attempt := 0
+
 			for {
 				if ctx.Err() != nil {
 					return
 				}
-				if atomic.LoadInt32(pauseFlag) == 0 {
-					log.Printf("[ГРУППА #%d] Возобновление — новые креды", groupID)
-					break
+
+				getConf := false
+				if shouldGetConfig && atomic.LoadInt32(&configSent) == 0 {
+					getConf = atomic.CompareAndSwapInt32(&configRequestInFlight, 0, 1)
 				}
-				time.Sleep(1 * time.Second)
-			}
-		}
-
-		// Получаем креды ДО убийства старого батча (бесшовная ротация)
-		hash := tp.Hashes[hashIndex%len(tp.Hashes)]
-		shortHash := hash
-		if len(shortHash) > 8 {
-			shortHash = shortHash[:8]
-		}
-		log.Printf("[ГРУППА #%d] Цикл %d: ожидание очереди получения кредов (хеш: %s...)", groupID, cycleNumber, shortHash)
-
-		groupAuthMutex.Lock()
-		log.Printf("[ГРУППА #%d] Цикл %d: запрос кредов", groupID, cycleNumber)
-		creds, err := GetCredsWithFallback(ctx, tp, hash, stats)
-		groupAuthMutex.Unlock()
-
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
-			select {
-			case <-time.After(30 * time.Second):
-			case <-ctx.Done():
-				return
-			}
-			continue
-		}
-
-		// Вычисляем точное время жизни на основе ответа VK (минус 2 минуты для надёжности)
-		sleepDuration := defaultCycleSecs
-		if creds.Lifetime > 120 {
-			sleepDuration = creds.Lifetime - 120
-		}
-		cycleDurationLocal := time.Duration(sleepDuration) * time.Second
-
-		log.Printf("[ГРУППА #%d] Запуск %d потоков (до смены кредов: %d сек)", groupID, workersPerGroup, sleepDuration)
-
-		log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров", groupID, creds.TurnURLs, len(workerIDs))
-
-		// ТЕПЕРЬ убиваем старый батч (креды уже готовы — минимальный простой)
-		killBatch()
-
-		// Создаём новый batch
-		batchCtx, batchCancel := context.WithCancel(ctx)
-		var configRequestInFlight int32
-
-		refreshCh := make(chan struct{}, 1)
-		doneChs := make([]chan struct{}, len(workerIDs))
-		var quotaErrorWorkers sync.Map
-		var notFoundErrorWorkers sync.Map
-
-		// Сигнализируем следующей группе, что мы успешно запустились (креды получены + 2 сек форы)
-		go func() {
-			commonSignalOnce.Do(func() {
-				if signalReady != nil {
-					time.Sleep(2000 * time.Millisecond) // Запас времени для рукопожатий (3*500ms + 500ms)
-					close(signalReady)
-					log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
+				var cc chan<- string
+				if getConf {
+					cc = configCh
 				}
-			})
-		}()
 
-		for i, wid := range workerIDs {
-			doneCh := make(chan struct{})
-			doneChs[i] = doneCh
+				credsMu.RLock()
+				credsSnapshot := *creds
+				credsSnapshot.TurnURLs = cloneStringSlice(creds.TurnURLs)
+				credsMu.RUnlock()
 
-			// Stagger: 500мс между воркерами
-			workerDelay := time.Duration(i) * 500 * time.Millisecond
+				configDelivered, sessErr := RunSession(ctx, tp, peer, d, localPort,
+					getConf, cc, wid, &credsSnapshot, deviceID, password, stats)
 
-			go func(wid int, delay time.Duration, doneCh chan struct{}) {
-				defer close(doneCh)
-
-				if delay > 0 {
-					select {
-					case <-time.After(delay):
-					case <-batchCtx.Done():
-						return
+				quotaRetry := false
+				if getConf {
+					if configDelivered {
+						atomic.StoreInt32(&configSent, 1)
+					} else {
+						atomic.StoreInt32(&configRequestInFlight, 0)
 					}
 				}
 
-				shouldGetConfig := getConfig
+				if sessErr != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					errStr := sessErr.Error()
+					errStrLower := strings.ToLower(errStr)
 
-				// Retry loop: воркер переподключается при ошибке
-				attempt := 0
-				for {
-					if batchCtx.Err() != nil {
+					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
+						strings.Contains(errStrLower, "attribute not found")
+					isTurnQuota := strings.Contains(errStrLower, "quota") || strings.Contains(errStr, "486")
+					quotaRetry = isTurnQuota
+					turnCredRefreshNeeded := !isTurnQuota && (turnAllocAttrMissing ||
+						strings.Contains(errStrLower, "turn allocate auth") ||
+						strings.Contains(errStrLower, "invalid credential") ||
+						strings.Contains(errStrLower, "stale nonce") ||
+						strings.Contains(errStrLower, "allocation mismatch") ||
+						strings.Contains(errStrLower, "error 508"))
+
+					if strings.Contains(errStrLower, "rate limit") ||
+						strings.Contains(errStrLower, "flood control") ||
+						strings.Contains(errStrLower, "ip mismatch") ||
+						strings.Contains(errStrLower, "error 29") {
+						errStr += " (ошибка со стороны ВК)"
+					}
+
+					if strings.Contains(errStr, "хеш мёртв") ||
+						strings.Contains(errStr, "FATAL_AUTH") {
+						log.Printf("[ВОРКЕР #%d] Фатальная ошибка: %s", wid, errStr)
 						return
 					}
 
-					getConf := false
-					if shouldGetConfig && attempt == 0 && atomic.LoadInt32(&configSent) == 0 {
-						getConf = atomic.CompareAndSwapInt32(&configRequestInFlight, 0, 1)
-					}
-					var cc chan<- string
-					if getConf {
-						cc = configCh
-					}
-
-					configDelivered, sessErr := RunSession(batchCtx, tp, peer, d, localPort, useUDP,
-						getConf, cc, wid, creds, deviceID, password, stats)
-
-					if getConf {
-						if configDelivered {
-							atomic.StoreInt32(&configSent, 1)
-						} else {
-							atomic.StoreInt32(&configRequestInFlight, 0)
-						}
-					}
-
-					if sessErr != nil {
-						if batchCtx.Err() != nil {
-							return
-						}
-						errStr := sessErr.Error()
-
-						// Дописываем понятные пояснения для типичных ошибок со стороны балансировщиков ВК
-						errStrLower := strings.ToLower(errStr)
-						if strings.Contains(errStrLower, "attribute not found") ||
-							strings.Contains(errStrLower, "rate limit") ||
-							strings.Contains(errStrLower, "flood control") ||
-							strings.Contains(errStrLower, "ip mismatch") ||
-							strings.Contains(errStrLower, "error 29") {
-							errStr += " (ошибка со стороны ВК)"
-						}
-
-						// Фатальные ошибки — смерть аккаунта
-						if strings.Contains(errStr, "хеш мёртв") ||
-							strings.Contains(errStr, "FATAL_AUTH") {
-							log.Printf("[ВОРКЕР #%d] Фатальная ошибка: %s", wid, errStr)
-							return
-						}
-
-						// Исчерпана ли квота TURN?
-						if strings.Contains(errStrLower, "turn квота") || strings.Contains(errStrLower, "quota") {
-							quotaErrorWorkers.Store(wid, true)
-							qCount := 0
-							quotaErrorWorkers.Range(func(k, v any) bool { qCount++; return true })
-							if qCount >= 5 {
-								select {
-								case refreshCh <- struct{}{}:
-									log.Printf("[ГРУППА #%d] Досрочная ротация: исчерпана квота TURN у %d воркеров", groupID, qCount)
-								default:
-								}
-							}
-							log.Printf("[ВОРКЕР #%d] Ошибка квоты TURN: %s", wid, errStr)
-							return // Воркер завершается, на текущих кредах он больше не поднимется
-						}
-
-						attempt++
+					attempt++
+					if isTurnQuota {
+						log.Printf("[ВОРКЕР #%d] [TURN] Квота relay исчерпана (один аккаунт VK = мало слотов), ждём: %s", wid, errStr)
+					} else if turnAllocAttrMissing {
+						log.Printf("[ВОРКЕР #%d] [TURN] Allocate вернул неполный ответ, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
+						refreshCreds("TURN Allocate attribute-not-found")
+					} else if turnCredRefreshNeeded {
+						log.Printf("[ВОРКЕР #%d] [TURN] Ошибка allocation/кредов, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
+						refreshCreds("TURN allocation error")
+					} else {
 						log.Printf("[ВОРКЕР #%d] Ошибка (попытка %d): %s", wid, attempt, errStr)
-
-						// Умерли ли креды? (Строго STUN/TURN ошибки: интернет работает, но сервер отвергает ключи)
-						isStunDeath := strings.Contains(errStrLower, "attribute not found") ||
-							strings.Contains(errStrLower, "error 29") ||
-							strings.Contains(errStrLower, "unauthorized") ||
-							strings.Contains(errStrLower, "allocation mismatch") ||
-							strings.Contains(errStrLower, "error 508") ||
-							strings.Contains(errStrLower, "cannot create socket")
-
-						isStreamClosed := strings.Contains(errStrLower, "stream closed")
-
-						if isStreamClosed {
-							select {
-							case refreshCh <- struct{}{}:
-								log.Printf("[ГРУППА #%d] Мгновенная ротация: сервер ВК закрыл поток (Stream Closed)", groupID)
-							default:
-							}
-						} else if isStunDeath {
-							notFoundErrorWorkers.Store(wid, true)
-							nfCount := 0
-							notFoundErrorWorkers.Range(func(k, v any) bool { nfCount++; return true })
-
-							// Если 8 уникальных воркеров получили явный отказ от сервера — ключи 100% протухли
-							if nfCount >= 8 {
-								select {
-								case refreshCh <- struct{}{}:
-									log.Printf("[ГРУППА #%d] Досрочная ротация: сервер ВК убил сессию (у %d воркеров)", groupID, nfCount)
-								default:
-								}
-							}
-						}
 					}
 
-					if batchCtx.Err() != nil {
-						return
-					}
+					// Если ошибка STUN (credentials invalid), воркер не сможет переподключиться. Завершаем.
+					isStunDeath := strings.Contains(errStrLower, "error 29") ||
+						strings.Contains(errStrLower, "cannot create socket")
 
-					// Пауза перед ретраем с джиттером 5-15 сек
-					retryDelay := time.Duration(5+rand.Intn(11)) * time.Second
-					select {
-					case <-time.After(retryDelay):
-					case <-batchCtx.Done():
+					if isStunDeath {
+						log.Printf("[ВОРКЕР #%d] Невосстановимая TURN/STUN ошибка, завершение: %s", wid, errStr)
 						return
 					}
 				}
-			}(wid, workerDelay, doneCh)
-		}
 
-		// Сохраняем батч для бесшовной ротации
-		prevCancel = batchCancel
-		prevDoneChs = doneChs
+				if ctx.Err() != nil {
+					return
+				}
 
-		// Ждём TTL либо сигнала досрочной ротации
-		select {
-		case <-time.After(cycleDurationLocal):
-			log.Printf("[ГРУППА #%d] TTL %v истёк, ротация", groupID, cycleDurationLocal)
-		case <-refreshCh:
-			log.Printf("[ГРУППА #%d] Вызвана досрочная ротация (креды не отвечали)", groupID)
-		case <-ctx.Done():
-			return
-		}
-
-		cycleNumber++
+				retryDelay := time.Duration(5+rand.Intn(11)) * time.Second
+				if quotaRetry {
+					retryDelay = time.Duration(30+rand.Intn(31)) * time.Second
+				}
+				select {
+				case <-time.After(retryDelay):
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(wid, workerDelay)
 	}
+
+	wg.Wait()
+	log.Printf("[ГРУППА #%d] Все воркеры группы завершились.", groupID)
 }
 
 // ParseHashes — парсит строку хешей
 func ParseHashes(raw string) []string {
 	var result []string
-	for _, h := range strings.Split(raw, ",") {
-		h = strings.TrimSpace(h)
-		if idx := strings.IndexAny(h, "/?#"); idx != -1 {
-			h = h[:idx]
-		}
+	seen := make(map[string]struct{})
+	for _, h := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	}) {
+		h = normalizeVKJoinHash(h)
 		if h != "" {
+			if _, exists := seen[h]; exists {
+				continue
+			}
+			seen[h] = struct{}{}
 			result = append(result, h)
 		}
 	}
 	return result
 }
 
-// TurnParams — конфигурация TURN
-type TurnParams struct {
-	Host          string
-	Port          string
-	Hashes        []string
-	SecondaryHash string
-	Sni           string
+func normalizeVKJoinHash(input string) string {
+	s := strings.Trim(strings.TrimSpace(input), "<>\"'")
+	if s == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(s)
+	if idx := strings.Index(lower, "/call/join/"); idx >= 0 {
+		s = s[idx+len("/call/join/"):]
+	} else if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return ""
+	}
+
+	if idx := strings.IndexAny(s, "?#/"); idx != -1 {
+		s = s[:idx]
+	}
+	return strings.Trim(strings.TrimSpace(s), "/")
 }
 
-// Unused import suppressor
-var _ = fmt.Sprintf
+// TurnParams — конфигурация TURN
+type TurnParams struct {
+	Host    string
+	Port    string
+	Hashes  []string
+	WrapKey []byte // Password-derived WRAP key (32 bytes), nil = disabled
+}
+
+// Credentials — учетные данные TURN
+type Credentials struct {
+	User          string
+	Pass          string
+	TurnURLs      []string
+	CacheStreamID int
+}
+
+

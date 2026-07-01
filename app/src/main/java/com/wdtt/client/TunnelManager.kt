@@ -43,8 +43,9 @@ object TunnelManager {
     private var currentParams: TunnelParams? = null
     private var lastContext: Context? = null
     private var forceRegenerateUA = false // принудительная перегенерация UA при ошибках
-    private var currentCaptchaMode = "wv" // режим обхода капчи: "wv" или "rjs"
-    private var currentCaptchaSolveMethod = "auto" // "manual" или "auto"
+    private var currentCaptchaMode = "auto"
+    private var currentCaptchaSolveMethod = "auto"
+    private var currentVkAnonPath = "vkcalls"
 
     val running = MutableStateFlow(false)
     val tunnelReady = MutableStateFlow(false) // true когда WireGuard успешно поднят
@@ -126,6 +127,7 @@ object TunnelManager {
             forceRegenerateUA = false
             currentCaptchaMode = params.captchaMode
             currentCaptchaSolveMethod = params.captchaSolveMethod
+            currentVkAnonPath = params.vkAnonPath
         }
         
         wgHelper = WireGuardHelper(appContext)
@@ -163,8 +165,14 @@ object TunnelManager {
                     return@launch
                 }
 
-                // Device ID для идентификации
-                val androidId = android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
+                withContext(Dispatchers.IO) {
+                    VkCaptchaProfile.writeForGo(appContext)
+                }
+
+                val androidId = android.provider.Settings.Secure.getString(
+                    context.contentResolver,
+                    android.provider.Settings.Secure.ANDROID_ID
+                ) ?: "unknown"
 
                 val cmd = mutableListOf(
                     binaryPath,
@@ -179,9 +187,14 @@ object TunnelManager {
                 cmd.add("-password")
                 cmd.add(password)
 
-                // Captcha mode: auto/wv/rjs
                 cmd.add("-captcha-mode")
                 cmd.add(params.captchaMode)
+
+                cmd.add("-vk-auth")
+                cmd.add("anonymous")
+
+                cmd.add("-vk-anon-path")
+                cmd.add(params.vkAnonPath)
 
                 AppLogger.bypass("Команда: ${cmd.joinToString(" ")}")
 
@@ -249,15 +262,25 @@ object TunnelManager {
 
                     // 0b. CAPTCHA_SOLVE — запрос от Go для WBV или fallback из RJS
                     if (lineTrim.startsWith("CAPTCHA_SOLVE|")) {
-                        val parts = lineTrim.substringAfter("CAPTCHA_SOLVE|").split("|", limit = 2)
-                        if (parts.size == 2) {
-                            val redirectUri = parts[0]
-                            val sessionToken = parts[1]
-                            scope.launch {
-                                handleCaptchaSolve(redirectUri, sessionToken)
+                        val payload = lineTrim.substringAfter("CAPTCHA_SOLVE|")
+                        val parts = payload.split("|", limit = 3)
+                        when (parts.size) {
+                            3 -> {
+                                val requestMode = parts[0]
+                                val redirectUri = parts[1]
+                                val sessionToken = parts[2]
+                                scope.launch {
+                                    handleCaptchaSolve(requestMode, redirectUri, sessionToken)
+                                }
                             }
-                        } else {
-                            writeCaptchaResult("error:invalid CAPTCHA_SOLVE format")
+                            2 -> {
+                                val redirectUri = parts[0]
+                                val sessionToken = parts[1]
+                                scope.launch {
+                                    handleCaptchaSolve("auto", redirectUri, sessionToken)
+                                }
+                            }
+                            else -> writeCaptchaResult("error:invalid CAPTCHA_SOLVE format")
                         }
                         return@forEachLine
                     }
@@ -601,35 +624,20 @@ object TunnelManager {
 
     /**
      * Вызывается при получении CAPTCHA_SOLVE от Go-процесса.
-     * Ручной режим сразу открывает видимый WebView.
-     * Авто-режим сначала пробует скрытый WebView для checkbox, а slider отдаёт в ручной fallback.
-     * Результат ВСЕГДА отправляется обратно в Go через writeCaptchaResult.
+     * auto/manual — только скрытый WebView (без ручного UI).
      */
-    private suspend fun handleCaptchaSolve(redirectUri: String, sessionToken: String) {
+    private suspend fun handleCaptchaSolve(requestMode: String, redirectUri: String, sessionToken: String) {
         val ctx = lastContext ?: run {
             writeCaptchaResult("error:context is null")
             return
         }
+        val mode = requestMode.lowercase()
 
         isCaptchaSolving = true
         try {
-            val token = if (currentCaptchaSolveMethod == "auto") {
-                updateLog("captcha_wv_step_1", "[КАПЧА WBV] Авто WebView...", 5, false)
-                try {
-                    CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken) { step ->
-                        updateLog("captcha_wv_auto_step", "[КАПЧА WBV] $step", 5, false)
-                    }
-                } catch (e: Exception) {
-                    if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED) {
-                        updateLog("captcha_wv_fallback", "[КАПЧА WBV] Обнаружен слайдер, открыт ручной WebView", 5, false)
-                        ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
-                    } else {
-                        throw e
-                    }
-                }
-            } else {
-                updateLog("captcha_wv_step_1", "[КАПЧА WBV] Создание ручного WebView...", 5, false)
-                ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
+            val token = when (mode) {
+                "auto", "manual", "selected" -> solveAutoWebViewCaptcha(ctx, redirectUri, sessionToken)
+                else -> solveAutoWebViewCaptcha(ctx, redirectUri, sessionToken)
             }
             updateLog("captcha_wv_step_4", "[КАПЧА WBV] Капча решена ✓", 5, false)
             writeCaptchaResult(token)
@@ -638,8 +646,8 @@ object TunnelManager {
             updateLog("captcha_wv_err", "[КАПЧА WBV] $errorMsg", 5, true)
             writeCaptchaResult("error:$errorMsg")
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            updateLog("captcha_wv_err", "[КАПЧА WBV] Таймаут (45с)", 5, true)
-            writeCaptchaResult("error:timeout (45s)")
+            updateLog("captcha_wv_err", "[КАПЧА WBV] Таймаут WebView", 5, true)
+            writeCaptchaResult("error:timeout")
         } catch (e: kotlin.coroutines.cancellation.CancellationException) {
             updateLog("captcha_wv_err", "[КАПЧА WBV] Отменено", 5, true)
             writeCaptchaResult("error:cancelled")
@@ -651,15 +659,55 @@ object TunnelManager {
             writeCaptchaResult("error:$errorMsg")
         } finally {
             isCaptchaSolving = false
-            // Сбрасываем счётчики ошибок, которые могли накопиться пока решалась капча
             currentHashErrorCount = 0
             refusedCount = 0
             floodCount = 0
             mismatchCount = 0
         }
 
-        // WebView уничтожен в finally блоке соответствующего менеджера.
         updateLog("captcha_wv_step_6", "[КАПЧА WBV] WebView уничтожен", 5, false)
+    }
+
+    private suspend fun solveSingleAutoWebViewCaptcha(
+        redirectUri: String,
+        sessionToken: String
+    ): String {
+        updateLog("captcha_wv_step_1", "[КАПЧА WBV] Авто WebView попытка 10с...", 5, false)
+        return CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken) { step ->
+            updateLog("captcha_wv_auto_step", "[КАПЧА WBV] $step", 5, false)
+        }
+    }
+
+    /** До 3 скрытых попыток — без ручного WebView для пользователя. */
+    private suspend fun solveAutoWebViewCaptcha(
+        ctx: android.content.Context,
+        redirectUri: String,
+        sessionToken: String
+    ): String {
+        var lastError: Exception? = null
+        repeat(3) { attempt ->
+            updateLog(
+                "captcha_wv_step_1",
+                "[КАПЧА WBV] Авто WebView попытка ${attempt + 1}/3...",
+                5,
+                false
+            )
+            try {
+                return solveSingleAutoWebViewCaptcha(redirectUri, sessionToken)
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                lastError = e
+                updateLog("captcha_wv_timeout_$attempt", "[КАПЧА WBV] Авто таймаут (${attempt + 1}/3)", 5, attempt == 2)
+            } catch (e: IllegalStateException) {
+                if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED) {
+                    updateLog("captcha_wv_slider_$attempt", "[КАПЧА WBV] Слайдер, повтор авто (${attempt + 1}/3)", 5, false)
+                    lastError = e
+                } else {
+                    throw e
+                }
+            }
+            kotlinx.coroutines.delay(300)
+        }
+        throw lastError ?: IllegalStateException("auto captcha failed")
     }
 
     /**
@@ -709,6 +757,7 @@ data class TunnelParams(
     val sni: String = "",
     val connectionPassword: String = "",
     val protocol: String = "udp",
-    val captchaMode: String = "wv", // "wv" или "rjs"
-    val captchaSolveMethod: String = "auto" // "manual" или "auto"
+    val captchaMode: String = "auto",
+    val captchaSolveMethod: String = "auto",
+    val vkAnonPath: String = "vkcalls"
 )

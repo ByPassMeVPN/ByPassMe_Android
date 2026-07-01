@@ -212,8 +212,9 @@ fun BypassTabContent(
             try {
                 settingsStore.save(server.host, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
                 settingsStore.saveConnectionPassword(connectionPassword)
-                settingsStore.saveCaptchaMode("rjs")
+                settingsStore.saveCaptchaMode("auto")
                 settingsStore.saveCaptchaSolveMethod("auto")
+                settingsStore.saveVkAnonPath("vkcalls")
 
                 if (XrayManager.running.value || XrayVpnService.isSessionActive) {
                     ConnectionCoordinator.prepareForBypass(appContext)
@@ -230,8 +231,9 @@ fun BypassTabContent(
                 putExtra("sni", "")
                 putExtra("connection_password", connectionPassword)
                 putExtra("protocol", "udp")
-                putExtra("captcha_mode", "rjs")
+                putExtra("captcha_mode", "auto")
                 putExtra("captcha_solve_method", "auto")
+                putExtra("vk_anon_path", "vkcalls")
             }
             if (Build.VERSION.SDK_INT >= 26) appContext.startForegroundService(intent)
             else appContext.startService(intent)

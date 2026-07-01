@@ -28,6 +28,18 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build libclient.so
+        run: |
+          export ANDROID_NDK_HOME="$(ls -d "$ANDROID_HOME/ndk"/* | sort -V | tail -n1)"
+          chmod +x scripts/build-go-lib.sh
+          ./scripts/build-go-lib.sh arm64-v8a
+          ls -lh app/src/main/jniLibs/arm64-v8a/
+
       - name: Generate signing keystore
         run: |
           keytool -genkey -v \
