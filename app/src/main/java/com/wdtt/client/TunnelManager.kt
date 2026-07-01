@@ -107,6 +107,53 @@ object TunnelManager {
         }
     }
 
+    /** Ошибки капчи — всегда в AppLogger с текстом причины. */
+    private fun logCaptchaError(message: String) {
+        AppLogger.bypassErr(message)
+        updateLog("captcha_err_${message.hashCode()}", message, 5, true)
+    }
+
+    private fun isCaptchaFailureLine(line: String): Boolean {
+        if (!line.contains("[КАПЧА", ignoreCase = true) && !line.contains("[Captcha]", ignoreCase = true)) {
+            return false
+        }
+        if (line.contains("решил капчу", ignoreCase = true) || line.contains("solve succeeded", ignoreCase = true)) {
+            return false
+        }
+        return line.contains("Solve failed", ignoreCase = true) ||
+            line.contains("ошибка", ignoreCase = true) ||
+            line.contains("не решил", ignoreCase = true) ||
+            line.contains("chain failed", ignoreCase = true) ||
+            line.contains("капча не решена", ignoreCase = true) ||
+            line.contains("failed:", ignoreCase = true) ||
+            line.contains("ошибка решения капчи", ignoreCase = true)
+    }
+
+    private fun formatCaptchaErrorFromGo(line: String): String {
+        val cleaned = line.replace(Regex("\\[STREAM\\s+\\d+\\]\\s*"), "").trim()
+        val detail = when {
+            cleaned.contains("Solve failed:", ignoreCase = true) ->
+                cleaned.substringAfter("Solve failed:", "").trim()
+            cleaned.contains("не решил", ignoreCase = true) ->
+                cleaned.substringAfter("не решил", "").trim()
+                    .removePrefix("за 2 попытки:").trim()
+            cleaned.contains("ошибка", ignoreCase = true) -> {
+                val tail = cleaned.substringAfterLast("ошибка", "").removePrefix(":").trim()
+                tail.ifEmpty { cleaned.substringAfter(": ", "").trim() }
+            }
+            cleaned.contains("failed:", ignoreCase = true) ->
+                cleaned.substringAfter("failed:", "").trim()
+            else -> cleaned
+        }
+        val prefix = when {
+            cleaned.contains("RJS", ignoreCase = true) -> "[КАПЧА RJS]"
+            cleaned.contains("WBV", ignoreCase = true) -> "[КАПЧА WBV]"
+            else -> "[КАПЧА]"
+        }
+        val text = detail.ifBlank { cleaned }
+        return if (text.startsWith("[")) text else "$prefix $text"
+    }
+
     fun start(context: Context, params: TunnelParams, isSwitching: Boolean = false) {
         if (running.value && !isSwitching) return
         
@@ -322,7 +369,13 @@ object TunnelManager {
                         }
                     }
 
-                    // 1. Статистика (Обновляемая строка)
+                    // 1. Ошибки капчи от Go — с текстом причины
+                    if (isCaptchaFailureLine(lineTrim)) {
+                        logCaptchaError(formatCaptchaErrorFromGo(lineTrim))
+                        return@forEachLine
+                    }
+
+                    // 2. Статистика (Обновляемая строка)
                     if (lineTrim.contains("[СТАТИСТИКА]")) {
                         val msg = lineTrim.substringAfter("[СТАТИСТИКА]").trim()
                         stats.value = msg
@@ -354,7 +407,11 @@ object TunnelManager {
                                 text.contains("решена") -> "captcha_rjs_6"
                                 else -> "captcha_rjs_${text.take(15).hashCode()}"
                             }
-                            updateLog(stableKey, "[КАПЧА RJS] $text", 5, false)
+                            if (text.contains("Ошибка", ignoreCase = true) || text.contains("ошибка", ignoreCase = true)) {
+                                logCaptchaError("[КАПЧА RJS] $text")
+                            } else {
+                                updateLog(stableKey, "[КАПЧА RJS] $text", 5, false)
+                            }
                         }
 
                         // ═══ WV капча логи от Go: [КАПЧА WBV] со стабильными ключами ═══
@@ -362,14 +419,17 @@ object TunnelManager {
                             var text = lineTrim.substringAfter("[КАПЧА] WBV:").trim()
                             text = text.replace(Regex("\\s*\\([^)]+\\)\\s*"), " ").trim()
                             
-                            val isErr = text.contains("Ошибка")
-                            val stableKey = when {
-                                text.contains("Запрос") -> "captcha_wv_step_2" // Step 2 (после создания WV)
-                                text.contains("Токен") -> "captcha_wv_step_5"  // Step 5 (перед уничтожением)
-                                isErr -> "captcha_wv_err"
-                                else -> "captcha_wv_go_other"
+                            val isErr = text.contains("Ошибка", ignoreCase = true) || text.contains("ошибка", ignoreCase = true)
+                            if (isErr) {
+                                logCaptchaError("[КАПЧА WBV] $text")
+                            } else {
+                                val stableKey = when {
+                                    text.contains("Запрос") -> "captcha_wv_step_2"
+                                    text.contains("Токен") -> "captcha_wv_step_5"
+                                    else -> "captcha_wv_go_other"
+                                }
+                                updateLog(stableKey, "[КАПЧА WBV] $text", 5, false)
                             }
-                            updateLog(stableKey, "[КАПЧА WBV] $text", 5, isErr, toAppLog = isErr)
                         }
 
                         lineTrim.contains("Старт") || lineTrim.contains("Ожидайте") ->
@@ -382,8 +442,8 @@ object TunnelManager {
                             updateLog("captcha_start", "[КАПЧА] Решение капчи...", 5, toAppLog = true)
                         lineTrim.contains("Smart Captcha решена") ->
                             updateLog("captcha_done", "[КАПЧА] Капча решена ✓", 5, toAppLog = true)
-                        lineTrim.contains("капча не решена") || lineTrim.contains("ошибка решения капчи") ->
-                            updateLog("captcha_failed", "[КАПЧА] Ошибка решения капчи", 5, true, toAppLog = true)
+                        lineTrim.contains("капча не решена", true) || lineTrim.contains("ошибка решения капчи", true) ->
+                            logCaptchaError(formatCaptchaErrorFromGo(lineTrim))
                         lineTrim.contains("Relay:") ->
                             updateLog("dtls_start", "[DTLS] Рукопожатие (Handshake)...", 1, false)
                         lineTrim.contains("DTLS ОК") || lineTrim.contains("Соединение установлено") ->
@@ -644,18 +704,18 @@ object TunnelManager {
             writeCaptchaResult(token)
         } catch (e: IllegalStateException) {
             val errorMsg = e.message ?: "WV state error"
-            updateLog("captcha_wv_err", "[КАПЧА WBV] $errorMsg", 5, true)
+            logCaptchaError("[КАПЧА WBV] $errorMsg")
             writeCaptchaResult("error:$errorMsg")
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            updateLog("captcha_wv_err", "[КАПЧА WBV] Таймаут WebView", 5, true)
+            logCaptchaError("[КАПЧА WBV] Таймаут WebView (авто 3/3)")
             writeCaptchaResult("error:timeout")
         } catch (e: kotlin.coroutines.cancellation.CancellationException) {
-            updateLog("captcha_wv_err", "[КАПЧА WBV] Отменено", 5, true)
+            logCaptchaError("[КАПЧА WBV] Отменено")
             writeCaptchaResult("error:cancelled")
         } catch (e: Exception) {
             val errorMsg = e.message ?: "${e::class.simpleName}"
             if (errorMsg != "tunnel stopped") {
-                updateLog("captcha_wv_err", "[КАПЧА WBV] Ошибка — $errorMsg", 5, true)
+                logCaptchaError("[КАПЧА WBV] $errorMsg")
             }
             writeCaptchaResult("error:$errorMsg")
         } finally {
@@ -697,7 +757,7 @@ object TunnelManager {
                 return solveSingleAutoWebViewCaptcha(redirectUri, sessionToken)
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 lastError = e
-                updateLog("captcha_wv_timeout_$attempt", "[КАПЧА WBV] Авто таймаут (${attempt + 1}/3)", 5, attempt == 2)
+                updateLog("captcha_wv_timeout_$attempt", "[КАПЧА WBV] Авто таймаут (${attempt + 1}/3)", 5, false)
             } catch (e: IllegalStateException) {
                 if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED) {
                     updateLog("captcha_wv_slider_$attempt", "[КАПЧА WBV] Слайдер, повтор авто (${attempt + 1}/3)", 5, false)
