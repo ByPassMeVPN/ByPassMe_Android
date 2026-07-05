@@ -23,7 +23,8 @@ data class VpnServerTemplate(
 )
 
 /**
- * Список VPN-серверов — удалённый конфиг + локальный кэш.
+ * VPN-серверы: приложение загружает только с hub.mos.ru (vpn-servers.json).
+ * Локальные файлы в hub/ — для редактирования и ручной загрузки на hub.
  */
 object VpnServerManager {
 
@@ -31,7 +32,6 @@ object VpnServerManager {
     private const val REPO_PROJECT  = "dzonsonandrej706%2Fdzonson"
     private const val SERVERS_FILE  = "vpn-servers.json"
     private const val REPO_BRANCH   = "main"
-    private const val ASSET_FILE    = "vpn-servers.json"
 
     val servers = MutableStateFlow<List<VpnServerTemplate>>(emptyList())
 
@@ -67,23 +67,14 @@ object VpnServerManager {
         }
     }
 
-    private fun loadFromAssets(context: Context): Boolean {
-        return try {
-            context.assets.open(ASSET_FILE).bufferedReader().use { applyServersJson(it.readText()) }
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     suspend fun loadCached(context: Context) = withContext(Dispatchers.IO) {
         if (servers.value.isNotEmpty()) return@withContext
-        val store = SettingsStore(context)
-        val cached = store.vpnServersJson.first()
-        if (cached.isNotBlank() && applyServersJson(cached)) return@withContext
-        loadFromAssets(context)
+        val cached = SettingsStore(context).vpnServersJson.first()
+        if (cached.isNotBlank()) applyServersJson(cached)
     }
 
-    private suspend fun fetchFromHub(context: Context): Boolean {
+    private suspend fun fetchFromHub(context: Context): FetchResult {
+        if (BuildConfig.REPO_ACCESS_TOKEN.isBlank()) return FetchResult.NoAccess
         return try {
             val conn = URL(
                 "$REPO_FILES_API/$REPO_PROJECT/repository/files/$SERVERS_FILE/raw?ref=$REPO_BRANCH"
@@ -92,29 +83,44 @@ object VpnServerManager {
             conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android")
             conn.connectTimeout = 8_000
             conn.readTimeout    = 8_000
-            if (conn.responseCode != 200) {
+            val code = conn.responseCode
+            if (code == 401 || code == 403) {
                 conn.disconnect()
-                return false
+                return FetchResult.NoAccess
+            }
+            if (code == 404) {
+                conn.disconnect()
+                return FetchResult.NotFound
+            }
+            if (code != 200) {
+                conn.disconnect()
+                return FetchResult.NetworkError
             }
             val body = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
-            if (!applyServersJson(body)) return false
+            if (!applyServersJson(body)) return FetchResult.EmptyList
             SettingsStore(context).saveVpnServersJson(body)
-            true
+            FetchResult.Success
         } catch (_: Exception) {
-            false
+            FetchResult.NetworkError
         }
     }
 
     suspend fun fetchServers(context: Context): FetchResult = withContext(Dispatchers.IO) {
-        if (fetchFromHub(context)) return@withContext FetchResult.Success
-        if (servers.value.isEmpty()) loadCached(context)
-        if (servers.value.isEmpty()) loadFromAssets(context)
-        if (servers.value.isNotEmpty()) FetchResult.Success else FetchResult.NetworkError
+        when (val result = fetchFromHub(context)) {
+            FetchResult.Success -> result
+            else -> {
+                if (servers.value.isEmpty()) loadCached(context)
+                if (servers.value.isNotEmpty()) FetchResult.Success else result
+            }
+        }
     }
 
     sealed class FetchResult {
         object Success : FetchResult()
+        object NoAccess : FetchResult()
+        object NotFound : FetchResult()
+        object EmptyList : FetchResult()
         object NetworkError : FetchResult()
     }
 

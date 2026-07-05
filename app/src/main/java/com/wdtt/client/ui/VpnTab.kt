@@ -128,8 +128,11 @@ private fun VpnTabContent(
     fun toastForFetch(result: VpnServerManager.FetchResult) {
         val msg = when (result) {
             VpnServerManager.FetchResult.Success -> "Список серверов обновлён"
-            VpnServerManager.FetchResult.NetworkError ->
-                "Не удалось загрузить список серверов"
+            VpnServerManager.FetchResult.NoAccess ->
+                "Нет доступа к hub.mos.ru · обновите приложение"
+            VpnServerManager.FetchResult.NotFound ->
+                "vpn-servers.json не найден на hub.mos.ru"
+            else -> "Не удалось загрузить список серверов"
         }
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }

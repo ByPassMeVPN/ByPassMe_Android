@@ -132,6 +132,7 @@ class MainActivity : ComponentActivity() {
                 SubscriptionChecker.loadCached(appContext)
                 XrayManager.restoreSelectedIndex(appContext)
                 VpnServerManager.loadCached(appContext)
+                BypassServerManager.loadCached(appContext)
                 SubscriptionChecker.refreshInBackground(appContext, scope)
                 BypassServerManager.refreshInBackground(appContext, scope)
                 VpnServerManager.refreshInBackground(appContext, scope)

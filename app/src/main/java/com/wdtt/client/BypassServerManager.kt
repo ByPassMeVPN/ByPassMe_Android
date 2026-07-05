@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -21,7 +22,8 @@ data class BypassServer(
 }
 
 /**
- * Список bypass-серверов — удалённый конфиг.
+ * Bypass-серверы: приложение загружает только с hub.mos.ru (bypass-servers.json).
+ * Локальные файлы в hub/ — для редактирования и ручной загрузки на hub.
  */
 object BypassServerManager {
 
@@ -49,21 +51,8 @@ object BypassServerManager {
             }
         }
 
-    private suspend fun fetchFromHub(): Boolean {
+    private fun applyServersJson(body: String): Boolean {
         return try {
-            val conn = URL(
-                "$REPO_FILES_API/$REPO_PROJECT/repository/files/$SERVERS_FILE/raw?ref=$REPO_BRANCH"
-            ).openConnection() as HttpURLConnection
-            conn.setRequestProperty("PRIVATE-TOKEN", BuildConfig.REPO_ACCESS_TOKEN)
-            conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android")
-            conn.connectTimeout = 8_000
-            conn.readTimeout    = 8_000
-            if (conn.responseCode != 200) {
-                conn.disconnect()
-                return false
-            }
-            val body = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
             val arr = JSONObject(body).getJSONArray("servers")
             val list = parseServersArray(arr)
             if (list.isEmpty()) return false
@@ -74,8 +63,53 @@ object BypassServerManager {
         }
     }
 
+    suspend fun loadCached(context: Context) = withContext(Dispatchers.IO) {
+        if (servers.value.isNotEmpty()) return@withContext
+        val cached = SettingsStore(context).bypassServersJson.first()
+        if (cached.isNotBlank()) applyServersJson(cached)
+    }
+
+    private suspend fun fetchFromHub(context: Context): FetchResult {
+        if (BuildConfig.REPO_ACCESS_TOKEN.isBlank()) return FetchResult.NoAccess
+        return try {
+            val conn = URL(
+                "$REPO_FILES_API/$REPO_PROJECT/repository/files/$SERVERS_FILE/raw?ref=$REPO_BRANCH"
+            ).openConnection() as HttpURLConnection
+            conn.setRequestProperty("PRIVATE-TOKEN", BuildConfig.REPO_ACCESS_TOKEN)
+            conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android")
+            conn.connectTimeout = 8_000
+            conn.readTimeout    = 8_000
+            val code = conn.responseCode
+            if (code == 401 || code == 403) {
+                conn.disconnect()
+                return FetchResult.NoAccess
+            }
+            if (code == 404) {
+                conn.disconnect()
+                return FetchResult.NotFound
+            }
+            if (code != 200) {
+                conn.disconnect()
+                return FetchResult.NetworkError
+            }
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            if (!applyServersJson(body)) return FetchResult.EmptyList
+            SettingsStore(context).saveBypassServersJson(body)
+            FetchResult.Success
+        } catch (_: Exception) {
+            FetchResult.NetworkError
+        }
+    }
+
     suspend fun fetchServers(context: Context): FetchResult = withContext(Dispatchers.IO) {
-        if (fetchFromHub()) FetchResult.Success else FetchResult.NetworkError
+        when (val result = fetchFromHub(context)) {
+            FetchResult.Success -> result
+            else -> {
+                if (servers.value.isEmpty()) loadCached(context)
+                if (servers.value.isNotEmpty()) FetchResult.Success else result
+            }
+        }
     }
 
     sealed class FetchResult {
