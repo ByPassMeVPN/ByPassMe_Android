@@ -1,0 +1,55 @@
+{
+  "servers": [
+    {
+      "id": "nl",
+      "name": "🇳🇱 Нидерланды",
+      "address": "144.31.54.213",
+      "port": 443,
+      "network": "hysteria",
+      "outboundTag": "proxy"
+    },
+    {
+      "id": "nl1",
+      "name": "🇳🇱 Нидерланды #1",
+      "address": "144.31.54.213",
+      "port": 2053,
+      "network": "grpc",
+      "fingerprint": "safari",
+      "outboundTag": "proxy"
+    },
+    {
+      "id": "de",
+      "name": "🇩🇪 Германия",
+      "address": "89.34.219.129",
+      "port": 443,
+      "network": "hysteria",
+      "outboundTag": "proxy-de"
+    },
+    {
+      "id": "de1",
+      "name": "🇩🇪 Германия #1",
+      "address": "89.34.219.129",
+      "port": 2053,
+      "network": "grpc",
+      "fingerprint": "safari",
+      "outboundTag": "proxy-de"
+    },
+    {
+      "id": "us",
+      "name": "🇺🇸 США",
+      "address": "45.91.138.188",
+      "port": 443,
+      "network": "hysteria",
+      "outboundTag": "proxy-us"
+    },
+    {
+      "id": "us1",
+      "name": "🇺🇸 США #1",
+      "address": "45.91.138.188",
+      "port": 2053,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "outboundTag": "proxy-us"
+    }
+  ]
+}
