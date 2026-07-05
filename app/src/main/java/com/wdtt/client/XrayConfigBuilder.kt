@@ -17,6 +17,11 @@ object XrayConfigBuilder {
     private const val REALITY_SNI = "www.samsung.com"
     private const val REALITY_GRPC_SNI = "www.google.com"
     private const val REALITY_FLOW = "xtls-rprx-vision"
+    private const val HYSTERIA_AUTH = "f2df79dd-f7d0-4c8b-8c61-7b6fb9852758"
+    private const val HYSTERIA_SNI = "bypassme.online"
+    private const val HYSTERIA_ALPN = "h3"
+    private const val HYSTERIA_FINGERPRINT = "firefox"
+    private const val HYSTERIA_PIN_SHA256 = "AAFC87C7E2B134A085B8798841B2D4E5ED7B8B2237D1F4B5C8D3539C3D0D27A2"
 
     private val whitelistDomains = arrayOf(
         "vk.com", "vk.ru", "vk.cc", "vk.link", "vk.me",
@@ -152,8 +157,9 @@ object XrayConfigBuilder {
 
     private fun outbounds(server: VpnServerTemplate, uuid: String): JSONArray {
         val proxy = when (server.network.lowercase()) {
-            "tcp" -> tcpRealityOutbound(server, uuid)
-            else  -> grpcRealityOutbound(server, uuid)
+            "hysteria" -> hysteriaOutbound(server)
+            "tcp"      -> tcpRealityOutbound(server, uuid)
+            else       -> grpcRealityOutbound(server, uuid)
         }
         return JSONArray().apply {
             put(proxy)
@@ -161,6 +167,34 @@ object XrayConfigBuilder {
             put(JSONObject().put("tag", "block").put("protocol", "blackhole"))
         }
     }
+
+    private fun hysteriaOutbound(server: VpnServerTemplate): JSONObject =
+        JSONObject().apply {
+            put("tag", server.outboundTag)
+            put("protocol", "hysteria")
+            put("settings", JSONObject().apply {
+                put("address", server.address)
+                put("port", server.port)
+                put("version", 2)
+            })
+            put("streamSettings", JSONObject().apply {
+                put("network", "hysteria")
+                put("security", "tls")
+                put("tlsSettings", JSONObject().apply {
+                    put("alpn", JSONArray().put(HYSTERIA_ALPN))
+                    put("fingerprint", HYSTERIA_FINGERPRINT)
+                    put("serverName", HYSTERIA_SNI)
+                    put("pinnedPeerCertificateChainSha256", JSONArray().put(HYSTERIA_PIN_SHA256))
+                })
+                put("hysteriaSettings", JSONObject().apply {
+                    put("auth", HYSTERIA_AUTH)
+                    put("version", 2)
+                })
+                put("sockopt", JSONObject().apply {
+                    put("udpDomainStrategy", "UseIP")
+                })
+            })
+        }
 
     private fun grpcRealityOutbound(server: VpnServerTemplate, uuid: String): JSONObject =
         JSONObject().apply {

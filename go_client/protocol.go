@@ -15,7 +15,7 @@ func RequestConfig(conn net.Conn, localPort, deviceID, password string) (string,
 	}
 
 	b := make([]byte, 4096)
-	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
 		return "", fmt.Errorf("установка дедлайна: %w", err)
 	}
 	n, err := conn.Read(b)
@@ -44,6 +44,16 @@ func RequestConfig(conn net.Conn, localPort, deviceID, password string) (string,
 	}
 
 	return resp, nil
+}
+
+// SendAuth отправляет команду авторизации, чтобы сервер мог связать соединение с устройством
+func SendAuth(conn net.Conn, deviceID, password string) error {
+	payload := fmt.Sprintf("AUTH:%s|%s", deviceID, password)
+	if _, err := conn.Write([]byte(payload)); err != nil {
+		return fmt.Errorf("отправка AUTH: %w", err)
+	}
+
+	return nil
 }
 
 

@@ -131,6 +131,7 @@ class MainActivity : ComponentActivity() {
                 }
                 SubscriptionChecker.loadCached(appContext)
                 XrayManager.restoreSelectedIndex(appContext)
+                VpnServerManager.loadCached(appContext)
                 SubscriptionChecker.refreshInBackground(appContext, scope)
                 BypassServerManager.refreshInBackground(appContext, scope)
                 VpnServerManager.refreshInBackground(appContext, scope)
@@ -395,7 +396,7 @@ private data class NavItem(
 
 private val navItems = listOf(
     NavItem("VPN", Icons.Filled.Lock, Icons.Outlined.Lock),
-    NavItem("Обход Б/С", Icons.Filled.Shield, Icons.Outlined.Shield),
+    NavItem("Обход", Icons.Filled.Shield, Icons.Outlined.Shield),
     NavItem("Логи", Icons.Filled.Terminal, Icons.Outlined.Terminal),
 )
 

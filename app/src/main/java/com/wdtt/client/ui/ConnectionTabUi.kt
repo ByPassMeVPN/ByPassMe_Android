@@ -28,10 +28,10 @@ import androidx.compose.ui.unit.sp
 
 internal const val SERVER_ROW_HEIGHT = 48
 internal const val SERVER_LIST_PEEK = 18
-/** Обход Б/С: видны 2 сервера, 3-й и далее — прокрутка. */
+/** Обход: видны 2 сервера, 3-й и далее — прокрутка. */
 internal const val SERVER_LIST_BYPASS_VISIBLE_ROWS = 2
-/** VPN: видны 3 сервера (NL/DE/US), с 4-го — прокрутка. */
-internal const val SERVER_LIST_VPN_VISIBLE_ROWS = 3
+/** VPN: видны 6 серверов, с 7-го — прокрутка. */
+internal const val SERVER_LIST_VPN_VISIBLE_ROWS = 6
 
 @Composable
 internal fun ConnectionServerList(

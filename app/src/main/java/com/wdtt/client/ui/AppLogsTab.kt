@@ -39,7 +39,8 @@ fun AppLogsTab() {
     var filter by remember { mutableStateOf<LogSource?>(null) }
 
     val filtered = remember(entries, filter) {
-        if (filter == null) entries else entries.filter { it.source == filter }
+        val list = if (filter == null) entries else entries.filter { it.source == filter }
+        if (filter == null) list.filter { it.level != LogLevel.DEBUG } else list
     }
 
     // Автоскролл вниз при новых логах
@@ -116,7 +117,7 @@ fun AppLogsTab() {
             if (filtered.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Логи появятся после запуска VPN или Обхода Б/С",
+                        "Логи появятся после запуска VPN или Обхода",
                         color = Color(0xFF8B949E),
                         fontSize = 13.sp,
                         fontFamily = FontFamily.Monospace

@@ -8,7 +8,7 @@ import (
 )
 
 func ModifyConfigForSplitTunnel(conf string, peerIP net.IP) string {
-	var excludes [][2]uint32 // [ip, bits]
+	var excludes [][2]uint32
 
 	if ip4 := peerIP.To4(); ip4 != nil {
 		excludes = append(excludes, [2]uint32{binary.BigEndian.Uint32(ip4), 32})

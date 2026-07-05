@@ -66,6 +66,7 @@ private fun VpnTabContent(
     val subStatus by SubscriptionChecker.status.collectAsStateWithLifecycle()
     val subDaysLeft by SubscriptionChecker.daysLeft.collectAsStateWithLifecycle()
     val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
+    val savedSubscriptionUrl by settingsStore.vpnSubscriptionUrl.collectAsStateWithLifecycle(initialValue = "")
     val vpnServers by VpnServerManager.servers.collectAsStateWithLifecycle()
 
     var isRefreshing by remember { mutableStateOf(false) }
@@ -84,7 +85,10 @@ private fun VpnTabContent(
     LaunchedEffect(Unit) {
         val savedIndex = settingsStore.vpnServerIndex.first()
         if (savedUuid.isNotBlank() && VpnServerManager.servers.value.isEmpty()) {
-            VpnServerManager.fetchServers(context)
+            VpnServerManager.loadCached(context)
+            if (VpnServerManager.servers.value.isEmpty()) {
+                VpnServerManager.fetchServers(context)
+            }
         }
         val list = VpnServerManager.servers.value
         selectedServer = when {
@@ -131,13 +135,7 @@ private fun VpnTabContent(
     }
 
     fun startVpnConnection() {
-        scope.launch {
-            try {
-                XrayManager.startVpn(context)
-            } catch (e: Exception) {
-                Toast.makeText(context, e.message ?: "Ошибка VPN", Toast.LENGTH_LONG).show()
-            }
-        }
+        XrayManager.startVpnAsync(context)
     }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
@@ -162,7 +160,7 @@ private fun VpnTabContent(
 
     if (showSubDialog) {
         BypassSubscriptionDialog(
-            initialUrl = settingsStore.vpnSubscriptionUrl.collectAsState(initial = "").value,
+            initialUrl = savedSubscriptionUrl,
             onSuccess = {
                 showSubDialog = false
                 scope.launch {
@@ -288,7 +286,7 @@ private fun VpnTabContent(
                             scope.launch {
                                 settingsStore.saveVpnServerIndex(index)
                                 if (vpnRunning || vpnConnecting) {
-                                    XrayManager.switchServer(context, index)
+                                    XrayManager.switchServerAsync(context, index)
                                 }
                             }
                         }
@@ -314,7 +312,7 @@ private fun VpnTabContent(
 
         Button(
             onClick = {
-                if (vpnActive) scope.launch { XrayManager.stopVpn(context) }
+                if (vpnActive) XrayManager.stopVpnAsync(context)
                 else requestVpnAndStart()
             },
             enabled = (savedUuid.isNotBlank() && vpnServers.isNotEmpty()) || vpnActive,

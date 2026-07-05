@@ -21,7 +21,7 @@ data class BypassServer(
 }
 
 /**
- * Список bypass-серверов (Обход Б/С) — удалённый конфиг.
+ * Список bypass-серверов — удалённый конфиг.
  */
 object BypassServerManager {
 

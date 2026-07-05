@@ -12,7 +12,6 @@ import com.wireguard.config.Peer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -22,9 +21,13 @@ class WireGuardHelper(context: Context) {
     private val appContext = context.applicationContext
     private val backend = (appContext as WdttApplication).getBackend(context)
 
-    private companion object {
+    companion object {
         val wgMutex = Mutex()
         var sharedTunnel: WgTunnel? = null
+
+        /** WireGuard TUN активен (GoBackend держит VPN-слот). */
+        val isVpnSlotInUse: Boolean
+            get() = sharedTunnel != null
 
         // Белый список РФ — эти приложения всегда идут напрямую (без туннеля).
         // Они доступны при ограничениях мобильного интернета, туннель им не нужен.
@@ -36,6 +39,7 @@ class WireGuardHelper(context: Context) {
             // Банки
             "ru.sberbankmobile",             // Сбер
             "ru.sber.smartonline",           // СберОнлайн
+            "ru.oneme.app",                  // MAX
             "ru.vtb24.mobilebanking.android",// ВТБ
             "ru.alfabank.mobile.android",    // Альфа-банк
             "ru.mtsbank.mtsapp",             // МТС Банк
@@ -87,7 +91,7 @@ class WireGuardHelper(context: Context) {
     }
 
     class WgTunnel : Tunnel {
-        override fun getName() = "Обход Б/С"
+        override fun getName() = "Обход"
         override fun onStateChange(newState: Tunnel.State) {}
     }
 
@@ -101,15 +105,11 @@ class WireGuardHelper(context: Context) {
                 throw IllegalStateException("VPN-разрешение не выдано")
             }
 
-            // Ждём освобождения VPN-слота после Xray (до ~8 с)
-            for (attempt in 0 until 10) {
-                if (!XrayVpnService.isSessionActive) {
-                    if (attempt > 0) delay(600)
-                    break
-                }
-                delay(800)
+            // Краткая проверка: Xray уже остановлен?
+            for (attempt in 0 until 15) {
+                if (!XrayVpnService.isSessionActive) break
+                delay(100)
             }
-            delay(500)
 
             ensureGoBackendServiceStarted()
 
@@ -120,7 +120,6 @@ class WireGuardHelper(context: Context) {
                     Log.w("WG", "Failed to stop previous tunnel before restart: ${e.readableMessage()}")
                 }
                 sharedTunnel = null
-                delay(150)
             }
 
             val parsedConfig = Config.parse(ByteArrayInputStream(configString.toByteArray(Charsets.UTF_8)))
@@ -171,9 +170,13 @@ class WireGuardHelper(context: Context) {
                 if (peer.preSharedKey.isPresent) peerBuilder.parsePreSharedKey(peer.preSharedKey.get().toBase64())
                 if (peer.endpoint.isPresent) peerBuilder.parseEndpoint(peer.endpoint.get().toString())
                 if (peer.persistentKeepalive.isPresent) peerBuilder.parsePersistentKeepalive(peer.persistentKeepalive.get().toString())
+                val allowedIpsStr = peer.allowedIps.joinToString(", ") { it.toString() }
+                if (allowedIpsStr.isNotBlank()) {
+                    peerBuilder.parseAllowedIPs(allowedIpsStr)
+                } else {
+                    peerBuilder.parseAllowedIPs("0.0.0.0/0")
+                }
             }
-            // Override AllowedIPs
-            peerBuilder.parseAllowedIPs("0.0.0.0/0")
             
             val finalConfig = Config.Builder()
                 .setInterface(newInterface)
@@ -220,14 +223,12 @@ class WireGuardHelper(context: Context) {
                 Log.e("WG", "Failed to stop WireGuard: ${e.readableMessage()}")
             }
         }
-        delay(400)
     }
 
-    /** Полностью освобождает VPN-слот WireGuard перед запуском Xray VPN. */
+    /** Полностью освобождает VPN-слот WireGuard / GoBackend. */
     suspend fun releaseVpnCompletely() {
         stopTunnel()
         stopGoBackendService()
-        delay(800)
     }
 
     private suspend fun stopGoBackendService() {
@@ -238,19 +239,16 @@ class WireGuardHelper(context: Context) {
                 Log.w("WG", "GoBackend stop failed: ${it.readableMessage()}")
             }
         }
-        delay(600)
     }
 
     private suspend fun ensureGoBackendServiceStarted() {
         withContext(Dispatchers.Main) {
             runCatching {
-                val intent = Intent(appContext, GoBackend.VpnService::class.java)
-                appContext.startService(intent)
+                appContext.startService(Intent(appContext, GoBackend.VpnService::class.java))
             }.onFailure {
                 Log.w("WG", "GoBackend service warmup failed: ${it.readableMessage()}")
             }
         }
-        delay(300)
     }
 
     private suspend fun setTunnelUpWithRetry(nextTunnel: WgTunnel, finalConfig: Config) {
@@ -264,7 +262,7 @@ class WireGuardHelper(context: Context) {
                 Log.w("WG", "WireGuard UP attempt ${attempt + 1}/3 failed: ${e.readableMessage()}")
                 runCatching { backend.setState(nextTunnel, Tunnel.State.DOWN, null) }
                 ensureGoBackendServiceStarted()
-                delay(250L * (attempt + 1))
+                delay(100L * (attempt + 1))
             }
         }
         throw lastError ?: IllegalStateException("WireGuard UP failed")

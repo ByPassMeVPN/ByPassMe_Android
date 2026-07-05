@@ -14,12 +14,12 @@ const val UPDATE_DIALOG_ACTION_POSTPONED = "postponed"
 const val UPDATE_DIALOG_ACTION_UPDATE = "update"
 
 private const val UPDATE_LOG_TAG = "WDTT"
-private const val GITHUB_RELEASES_URL = "https://api.github.com/repos/amurcanov/proxy-turn-vk-android/releases?per_page=30"
-private const val GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/amurcanov/proxy-turn-vk-android/releases/latest"
-private const val GITHUB_LATEST_RELEASE_WEB_URL = "https://github.com/amurcanov/proxy-turn-vk-android/releases/latest"
-private const val GITHUB_RELEASE_TAG_URL_PREFIX = "https://github.com/amurcanov/proxy-turn-vk-android/releases/tag/"
-private const val GITHUB_TAGS_URL = "https://api.github.com/repos/amurcanov/proxy-turn-vk-android/tags?per_page=100"
-private const val GITHUB_TAG_TREE_URL_PREFIX = "https://github.com/amurcanov/proxy-turn-vk-android/tree/"
+private const val GITHUB_RELEASES_URL = "https://api.github.com/repos/ByPassMeVPN/ByPassMe_Android/releases?per_page=30"
+private const val GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/ByPassMeVPN/ByPassMe_Android/releases/latest"
+private const val GITHUB_LATEST_RELEASE_WEB_URL = "https://github.com/ByPassMeVPN/ByPassMe_Android/releases/latest"
+private const val GITHUB_RELEASE_TAG_URL_PREFIX = "https://github.com/ByPassMeVPN/ByPassMe_Android/releases/tag/"
+private const val GITHUB_TAGS_URL = "https://api.github.com/repos/ByPassMeVPN/ByPassMe_Android/tags?per_page=100"
+private const val GITHUB_TAG_TREE_URL_PREFIX = "https://github.com/ByPassMeVPN/ByPassMe_Android/tree/"
 private const val GITHUB_API_RATE_LIMIT_FALLBACK_MS = 30L * 60L * 1000L
 private val VERSION_NUMBER_REGEX = Regex("\\d+(?:\\.\\d+)*")
 

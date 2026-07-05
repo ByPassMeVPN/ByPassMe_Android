@@ -55,7 +55,8 @@ class SettingsStore(context: Context) {
         private val CAPTCHA_MODE = stringPreferencesKey("captcha_mode") // "webview" or "reverse_js"
         private val CAPTCHA_SOLVE_METHOD = stringPreferencesKey("captcha_solve_method") // "manual" or "auto"
         private val CAPTCHA_WBV_SOLVE_METHOD = stringPreferencesKey("captcha_wbv_solve_method") // "manual" or "auto"
-        
+        private val VK_ANON_PATH = stringPreferencesKey("vk_anon_path") // "vkcalls" or "legacy"
+
         // ═══ VPN Exclusions Mode ═══
         private val IS_WHITELIST = booleanPreferencesKey("is_whitelist")
 
@@ -141,9 +142,10 @@ class SettingsStore(context: Context) {
     val proxyPort: Flow<Int> = dataStore.data.map { it[PROXY_PORT] ?: 1080 }
 
     // ═══ Captcha Solve Mode ═══
-    val captchaMode: Flow<String> = dataStore.data.map { it[CAPTCHA_MODE] ?: "wv" }
-    val captchaSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_SOLVE_METHOD] ?: "manual" }
-    val captchaWbvSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_WBV_SOLVE_METHOD] ?: "manual" }
+    val captchaMode: Flow<String> = dataStore.data.map { it[CAPTCHA_MODE] ?: "auto" }
+    val captchaSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_SOLVE_METHOD] ?: "auto" }
+    val captchaWbvSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_WBV_SOLVE_METHOD] ?: "auto" }
+    val vkAnonPath: Flow<String> = dataStore.data.map { it[VK_ANON_PATH] ?: "vkcalls" }
 
     // ═══ Bypass ═══
     val bypassServerIndex: Flow<Int> = dataStore.data.map { it[BYPASS_SERVER_INDEX] ?: 0 }
@@ -348,6 +350,12 @@ class SettingsStore(context: Context) {
             if (prefs[CAPTCHA_MODE] == "wv") {
                 prefs[CAPTCHA_SOLVE_METHOD] = method
             }
+        }
+    }
+
+    suspend fun saveVkAnonPath(path: String) {
+        dataStore.edit { prefs ->
+            prefs[VK_ANON_PATH] = if (path.equals("legacy", ignoreCase = true)) "legacy" else "vkcalls"
         }
     }
 

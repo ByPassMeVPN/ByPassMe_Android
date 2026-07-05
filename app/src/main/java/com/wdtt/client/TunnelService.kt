@@ -79,14 +79,15 @@ class TunnelService : Service() {
                     connectionPassword = connectionPassword,
                     protocol = intent.getStringExtra("protocol") ?: "udp",
                     captchaMode = sanitizeCaptchaMode(intent.getStringExtra("captcha_mode")),
-                    captchaSolveMethod = intent.getStringExtra("captcha_solve_method") ?: "auto"
+                    captchaSolveMethod = intent.getStringExtra("captcha_solve_method") ?: "auto",
+                    vkAnonPath = sanitizeVkAnonPath(
+                        intent.getStringExtra("vk_anon_path")?.takeIf { it.isNotEmpty() }
+                    )
                 )
                 TunnelManager.scope.launch {
                     val handoffDone = intent.getBooleanExtra(ConnectionCoordinator.EXTRA_HANDOFF_DONE, false)
                     if (!handoffDone) {
                         ConnectionCoordinator.prepareForBypass(applicationContext)
-                    } else {
-                        delay(2_000)
                     }
                     startTunnel(params)
                 }
@@ -139,7 +140,8 @@ class TunnelService : Service() {
                     sni = store.sni.first(),
                     connectionPassword = store.connectionPassword.first().ifBlank { "ByPassMe" },
                     captchaMode = sanitizeCaptchaMode(store.captchaMode.first()),
-                    captchaSolveMethod = store.captchaSolveMethod.first()
+                    captchaSolveMethod = store.captchaSolveMethod.first(),
+                    vkAnonPath = sanitizeVkAnonPath(store.vkAnonPath.first())
                 )
                 if (params.peer.isNotEmpty() && params.vkHashes.isNotEmpty()) {
                     ConnectionCoordinator.prepareForBypass(appContext)
@@ -235,10 +237,16 @@ class TunnelService : Service() {
     }
 
     private fun sanitizeCaptchaMode(mode: String?): String {
-        val normalized = mode?.lowercase() ?: "wv"
-        if (RJS_TEMPORARILY_DISABLED && normalized == "rjs") return "wv"
-        return if (normalized == "wv" || normalized == "rjs") normalized else "wv"
+        val normalized = mode?.lowercase()?.trim() ?: "auto"
+        if (RJS_TEMPORARILY_DISABLED && normalized == "rjs") return "auto"
+        return when (normalized) {
+            "auto", "wv", "rjs" -> normalized
+            else -> "auto"
+        }
     }
+
+    private fun sanitizeVkAnonPath(path: String?): String =
+        if (path.equals("legacy", ignoreCase = true)) "legacy" else "vkcalls"
 
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
@@ -315,7 +323,7 @@ class TunnelService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             TUNNEL_NOTIFICATION_CHANNEL_ID,
-            "Обход Б/С",
+            "Обход",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
             description = "Уведомление о работе туннеля"
@@ -342,7 +350,7 @@ class TunnelService : Service() {
         )
 
         return NotificationCompat.Builder(this, TUNNEL_NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Обход Б/С")
+            .setContentTitle("Обход")
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_stat_connected)
             .setOngoing(true)

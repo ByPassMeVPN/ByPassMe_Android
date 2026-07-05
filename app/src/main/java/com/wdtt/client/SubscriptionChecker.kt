@@ -90,8 +90,12 @@ object SubscriptionChecker {
                     }
                 }
                 code == 404 -> {
-                    revokeAccess(context, "expired")
-                    Result.Revoked
+                    if (isAuthoritativeSubscriptionNotFound(body)) {
+                        revokeAccess(context, "expired")
+                        Result.Revoked
+                    } else {
+                        Result.Error("Нет связи с сервером")
+                    }
                 }
                 code == 200 && body.isNotEmpty() -> return@withContext parseAndSave(context, url, body)
                 else -> return@withContext Result.Error("Ошибка сервера: $code")
@@ -157,18 +161,21 @@ object SubscriptionChecker {
         if (expireAt > 0L) {
             val computed = ((expireAt - System.currentTimeMillis()) / 86_400_000L).toInt().coerceAtLeast(0)
             daysLeft.value = computed
-            if (computed == 0 && cached == "active") {
-                revokeAccess(context, "expired")
-                return
-            }
-            status.value = cached
+            status.value = cached.ifBlank { "active" }
         } else {
-            status.value   = cached
+            status.value   = cached.ifBlank { "unknown" }
             daysLeft.value = days
-            if (cached == "expired") {
-                revokeAccess(context, "expired")
-            }
         }
+    }
+
+    /** Только явный JSON-ответ API, не HTML/прокси при глушении. */
+    private fun isAuthoritativeSubscriptionNotFound(body: String): Boolean {
+        val trimmed = body.trim()
+        if (!trimmed.startsWith("{")) return false
+        return runCatching {
+            val json = JSONObject(trimmed)
+            json.optString("detail", "").contains("Subscription", ignoreCase = true)
+        }.getOrDefault(false)
     }
 
     /**

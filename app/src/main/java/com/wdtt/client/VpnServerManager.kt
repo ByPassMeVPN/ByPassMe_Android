@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -22,7 +23,7 @@ data class VpnServerTemplate(
 )
 
 /**
- * Список VPN-серверов — удалённый конфиг.
+ * Список VPN-серверов — удалённый конфиг + локальный кэш.
  */
 object VpnServerManager {
 
@@ -30,6 +31,7 @@ object VpnServerManager {
     private const val REPO_PROJECT  = "dzonsonandrej706%2Fdzonson"
     private const val SERVERS_FILE  = "vpn-servers.json"
     private const val REPO_BRANCH   = "main"
+    private const val ASSET_FILE    = "vpn-servers.json"
 
     val servers = MutableStateFlow<List<VpnServerTemplate>>(emptyList())
 
@@ -53,7 +55,35 @@ object VpnServerManager {
             }
         }
 
-    private suspend fun fetchFromHub(): Boolean {
+    private fun applyServersJson(body: String): Boolean {
+        return try {
+            val arr = JSONObject(body).getJSONArray("servers")
+            val list = parseServersArray(arr)
+            if (list.isEmpty()) return false
+            servers.value = list
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun loadFromAssets(context: Context): Boolean {
+        return try {
+            context.assets.open(ASSET_FILE).bufferedReader().use { applyServersJson(it.readText()) }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    suspend fun loadCached(context: Context) = withContext(Dispatchers.IO) {
+        if (servers.value.isNotEmpty()) return@withContext
+        val store = SettingsStore(context)
+        val cached = store.vpnServersJson.first()
+        if (cached.isNotBlank() && applyServersJson(cached)) return@withContext
+        loadFromAssets(context)
+    }
+
+    private suspend fun fetchFromHub(context: Context): Boolean {
         return try {
             val conn = URL(
                 "$REPO_FILES_API/$REPO_PROJECT/repository/files/$SERVERS_FILE/raw?ref=$REPO_BRANCH"
@@ -68,10 +98,8 @@ object VpnServerManager {
             }
             val body = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
-            val arr = JSONObject(body).getJSONArray("servers")
-            val list = parseServersArray(arr)
-            if (list.isEmpty()) return false
-            servers.value = list
+            if (!applyServersJson(body)) return false
+            SettingsStore(context).saveVpnServersJson(body)
             true
         } catch (_: Exception) {
             false
@@ -79,7 +107,10 @@ object VpnServerManager {
     }
 
     suspend fun fetchServers(context: Context): FetchResult = withContext(Dispatchers.IO) {
-        if (fetchFromHub()) FetchResult.Success else FetchResult.NetworkError
+        if (fetchFromHub(context)) return@withContext FetchResult.Success
+        if (servers.value.isEmpty()) loadCached(context)
+        if (servers.value.isEmpty()) loadFromAssets(context)
+        if (servers.value.isNotEmpty()) FetchResult.Success else FetchResult.NetworkError
     }
 
     sealed class FetchResult {

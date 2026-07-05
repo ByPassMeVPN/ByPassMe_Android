@@ -57,10 +57,14 @@ import com.wdtt.client.ConnectionCoordinator
 import com.wdtt.client.SettingsStore
 import com.wdtt.client.TunnelManager
 import com.wdtt.client.TunnelService
+import com.wdtt.client.XrayManager
+import com.wdtt.client.XrayVpnService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlin.math.roundToInt
 
 private const val WORKERS_PER_GROUP = 9
@@ -95,6 +99,7 @@ fun BypassTabContent(
     val subStatus by com.wdtt.client.SubscriptionChecker.status.collectAsStateWithLifecycle()
     val subDaysLeft by com.wdtt.client.SubscriptionChecker.daysLeft.collectAsStateWithLifecycle()
     val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
+    val savedSubscriptionUrl by settingsStore.vpnSubscriptionUrl.collectAsStateWithLifecycle(initialValue = "")
     val bypassServers by BypassServerManager.servers.collectAsStateWithLifecycle()
 
     var isRefreshing by remember { mutableStateOf(false) }
@@ -203,16 +208,20 @@ fun BypassTabContent(
             return
         }
         saveJob?.cancel()
-        scope.launch {
+        val appContext = context.applicationContext
+        TunnelManager.scope.launch {
             try {
                 settingsStore.save(server.host, vkHash, "", currentWorkers.toInt(), "udp", 9000, "", false)
                 settingsStore.saveConnectionPassword(connectionPassword)
-                settingsStore.saveCaptchaMode("rjs")
+                settingsStore.saveCaptchaMode("auto")
                 settingsStore.saveCaptchaSolveMethod("auto")
+                settingsStore.saveVkAnonPath("vkcalls")
 
-                ConnectionCoordinator.prepareForBypass(context)
+                if (XrayManager.running.value || XrayVpnService.isSessionActive) {
+                    ConnectionCoordinator.prepareForBypass(appContext)
+                }
 
-                val intent = Intent(context, TunnelService::class.java).apply {
+                val intent = Intent(appContext, TunnelService::class.java).apply {
                     action = "START"
                     putExtra(ConnectionCoordinator.EXTRA_HANDOFF_DONE, true)
                     putExtra("peer", server.peer)
@@ -223,17 +232,20 @@ fun BypassTabContent(
                 putExtra("sni", "")
                 putExtra("connection_password", connectionPassword)
                 putExtra("protocol", "udp")
-                putExtra("captcha_mode", "rjs")
+                putExtra("captcha_mode", "auto")
                 putExtra("captcha_solve_method", "auto")
+                putExtra("vk_anon_path", "vkcalls")
             }
-            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
-            else context.startService(intent)
+            if (Build.VERSION.SDK_INT >= 26) appContext.startForegroundService(intent)
+            else appContext.startService(intent)
             } catch (e: Exception) {
-                android.widget.Toast.makeText(
-                    context,
-                    e.message ?: "Ошибка запуска обхода",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        e.message ?: "Ошибка запуска обхода",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
@@ -260,7 +272,7 @@ fun BypassTabContent(
 
     if (showSubDialog) {
         BypassSubscriptionDialog(
-            initialUrl = settingsStore.vpnSubscriptionUrl.collectAsState(initial = "").value,
+            initialUrl = savedSubscriptionUrl,
             onSuccess = {
                 showSubDialog = false
                 scope.launch {
@@ -305,7 +317,7 @@ fun BypassTabContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "Обход Б/С",
+                "Обход",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -451,8 +463,15 @@ fun BypassTabContent(
 
         Button(
             onClick = {
-                if (tunnelRunning) context.startService(Intent(context, TunnelService::class.java).apply { action = "STOP" })
-                else requestVpnAndStart()
+                if (tunnelRunning) {
+                    val appCtx = context.applicationContext
+                    TunnelManager.scope.launch {
+                        TunnelManager.stopAndWait()
+                        appCtx.startService(
+                            Intent(appCtx, TunnelService::class.java).apply { action = "STOP" }
+                        )
+                    }
+                } else requestVpnAndStart()
             },
             enabled = ((isValid && bypassServers.isNotEmpty() && cooldownSeconds == 0) || tunnelRunning),
             modifier = Modifier.fillMaxWidth().height(50.dp),
@@ -498,9 +517,13 @@ internal fun BypassSubscriptionDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var inputText by rememberSaveable { mutableStateOf(initialUrl) }
+    var inputText by remember { mutableStateOf(initialUrl) }
     var isLoading by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf("") }
+
+    LaunchedEffect(initialUrl) {
+        inputText = initialUrl
+    }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = { if (!isLoading) onDismiss() }) {
         Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 8.dp) {
@@ -513,7 +536,7 @@ internal fun BypassSubscriptionDialog(
                     }
                     if (!isLoading) IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null) }
                 }
-                Text("Вставьте ссылку подписки из вашей панели ByPassMe.\nСохраняется один раз — больше не потребуется.",
+                Text("Вставьте ссылку подписки из вашей панели ByPassMe.\nПоследняя сохранённая ссылка подставится автоматически.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedTextField(
                     value = inputText,

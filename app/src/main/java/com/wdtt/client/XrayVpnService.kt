@@ -22,6 +22,7 @@ import go.Seq
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
+import com.wireguard.android.backend.GoBackend
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
@@ -54,7 +55,7 @@ class XrayVpnService : VpnService() {
         var isSessionActive: Boolean = false
             private set
 
-        /** Ждёт полного освобождения TUN (переключение на Обход Б/С). */
+        /** Ждёт полного освобождения TUN (переключение на Обход). */
         suspend fun waitUntilStopped(timeoutMs: Long = 10_000L) {
             val deadline = System.currentTimeMillis() + timeoutMs
             while (isSessionActive && System.currentTimeMillis() < deadline) {
@@ -256,10 +257,22 @@ class XrayVpnService : VpnService() {
     }
 
     private fun configureVpn(): Boolean {
-        repeat(8) { attempt ->
+        for (attempt in 0 until 20) {
+            if (WireGuardHelper.isVpnSlotInUse) {
+                releaseGoBackendSlotQuietly()
+                try {
+                    Thread.sleep(200)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+                continue
+            }
             if (attempt > 0) {
                 Log.i(TAG, "configureVpn retry $attempt")
-                try { Thread.sleep(900L * attempt) } catch (_: InterruptedException) {
+                try {
+                    Thread.sleep(200L * attempt.coerceAtMost(5))
+                } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     return false
                 }
@@ -287,6 +300,13 @@ class XrayVpnService : VpnService() {
                 val established = builder.establish()
                 if (established == null) {
                     Log.w(TAG, "establish() returned null (attempt $attempt)")
+                    releaseGoBackendSlotQuietly()
+                    try {
+                        Thread.sleep(400)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return false
+                    }
                     continue
                 }
                 vpnInterface = established
@@ -298,6 +318,12 @@ class XrayVpnService : VpnService() {
             }
         }
         return false
+    }
+
+    private fun releaseGoBackendSlotQuietly() {
+        runCatching {
+            stopService(Intent(this, GoBackend.VpnService::class.java))
+        }
     }
 
     private fun startXrayCore(configJson: String) {
