@@ -20,16 +20,26 @@ android {
         ?: System.getenv("HUB_MOS_TOKEN")
         ?: ""
 
+    // XOR как на iOS HubToken — в APK нет plaintext glpat-...
+    val hubTokenEnc = run {
+        if (repoAccessToken.isEmpty()) return@run ""
+        val key = 0x5C
+        repoAccessToken.toByteArray(Charsets.UTF_8)
+            .mapIndexed { i, b -> ((b.toInt() and 0xFF) xor key xor (i and 0xFF)).toString() }
+            .joinToString(",")
+    }
+
     defaultConfig {
         applicationId = "com.bypassme.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 42
-        versionName = "1.6.6"
+        versionCode = 43
+        versionName = "1.6.7"
 
         multiDexEnabled = true
 
-        buildConfigField("String", "REPO_ACCESS_TOKEN", "\"$repoAccessToken\"")
+        buildConfigField("String", "HUB_TOKEN_ENC", "\"$hubTokenEnc\"")
+        // Не кладём plaintext токен в BuildConfig
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

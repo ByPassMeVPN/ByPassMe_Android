@@ -74,12 +74,13 @@ object VpnServerManager {
     }
 
     private suspend fun fetchFromHub(context: Context): FetchResult {
-        if (BuildConfig.REPO_ACCESS_TOKEN.isBlank()) return FetchResult.NoAccess
+        val token = HubToken.mos
+        if (token.isBlank()) return FetchResult.NoAccess
         return try {
             val conn = URL(
                 "$REPO_FILES_API/$REPO_PROJECT/repository/files/$SERVERS_FILE/raw?ref=$REPO_BRANCH"
             ).openConnection() as HttpURLConnection
-            conn.setRequestProperty("PRIVATE-TOKEN", BuildConfig.REPO_ACCESS_TOKEN)
+            conn.setRequestProperty("PRIVATE-TOKEN", token)
             conn.setRequestProperty("User-Agent", "ByPassMe/2.0 Android")
             conn.connectTimeout = 8_000
             conn.readTimeout    = 8_000
