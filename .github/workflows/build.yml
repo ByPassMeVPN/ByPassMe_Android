@@ -1,4 +1,4 @@
-name: Сборка АРК
+name: ByPassMe VPN
 
 on:
   push:
@@ -95,8 +95,44 @@ jobs:
         run: |
           TAG="v$(date +'%Y%m%d%H%M')"
           gh release create "$TAG" ByPassMe.apk \
-            --title "ByPassMe Android $TAG" \
-            --notes "Автоматическая сборка: jam-check, категория vpn/combo, защита онбординга при глушении" \
+            --title "ByPassMe VPN" \
+            --notes "ByPassMe VPN" \
             --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify no plaintext hub token in APK
+        run: |
+          # Token from CI secret must not appear as plaintext in the APK
+          python3 - <<'PY'
+          import os, zipfile, pathlib, sys
+          token = os.environ.get("HUB_MOS_TOKEN", "").strip()
+          if not token:
+              print("skip: empty token env")
+              sys.exit(0)
+          apk = pathlib.Path("ByPassMe.apk")
+          data = apk.read_bytes()
+          if token.encode() in data:
+              print("FAIL: plaintext hub token found in APK")
+              sys.exit(1)
+          with zipfile.ZipFile(apk) as z:
+              for name in z.namelist():
+                  raw = z.read(name)
+                  if token.encode() in raw:
+                      print(f"FAIL: plaintext hub token in {name}")
+                      sys.exit(1)
+          print("OK: no plaintext hub token in APK")
+          PY
+        env:
+          HUB_MOS_TOKEN: ${{ secrets.HUB_MOS_TOKEN }}
+
+      - name: Clean repository (keep README only)
+        run: |
+          cp README.release.md /tmp/README.md
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          mv /tmp/README.md README.md
+          git config user.email "firstnameworst@gmail.com"
+          git config user.name "firstnameworst"
+          git add -A
+          git commit -m "ByPassMe VPN [skip ci]" || true
+          git push
