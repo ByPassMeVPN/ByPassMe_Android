@@ -67,6 +67,7 @@ private fun VpnTabContent(
     val subDaysLeft by SubscriptionChecker.daysLeft.collectAsStateWithLifecycle()
     val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
     val savedSubscriptionUrl by settingsStore.vpnSubscriptionUrl.collectAsStateWithLifecycle(initialValue = "")
+    val hasBypassAccess by settingsStore.hasBypassAccess.collectAsStateWithLifecycle(initialValue = true)
     val vpnServers by VpnServerManager.servers.collectAsStateWithLifecycle()
 
     var isRefreshing by remember { mutableStateOf(false) }
@@ -254,6 +255,8 @@ private fun VpnTabContent(
         }
 
         StatusBanner(status = subStatus, daysLeft = subDaysLeft)
+
+        JamWarningBanner(hasBypassAccess = hasBypassAccess)
 
         ConnectionStatusOrb(running = vpnRunning || vpnConnecting, ready = vpnRunning)
 

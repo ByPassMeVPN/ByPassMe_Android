@@ -112,7 +112,11 @@ object SubscriptionChecker {
             val daysL    = json.optInt("days_left", 0)
             val uuid     = json.optString("uuid", "")
             val wdttPass = json.optString("wdtt_password", "")
-            val type     = json.optString("type", "unknown")
+            val type     = json.optString("type", "unknown").lowercase()
+            val hasVpn = if (json.has("vpn")) json.getBoolean("vpn")
+                         else (type == "vpn" || type == "combo")
+            val hasBypass = if (json.has("bypass")) json.getBoolean("bypass")
+                            else (type == "bypass" || type == "combo")
 
             val newStatus = when {
                 daysL == 0 && type != "unknown" -> "expired"
@@ -125,7 +129,12 @@ object SubscriptionChecker {
                 return Result.Revoked
             }
 
-            val expireAt = System.currentTimeMillis() + daysL * 86_400_000L
+            // Без UUID нельзя считать подписку валидной — но не чистим кэш при странном ответе.
+            if (uuid.isBlank()) {
+                return Result.Error("В ответе нет UUID")
+            }
+
+            val expireAt = if (daysL > 0) System.currentTimeMillis() + daysL * 86_400_000L else 0L
 
             val store = SettingsStore(context)
             store.saveVpnCredentialsFull(
@@ -133,7 +142,10 @@ object SubscriptionChecker {
                 url      = url,
                 status   = newStatus,
                 daysLeft = daysL,
-                expireAt = expireAt
+                expireAt = expireAt,
+                subType  = type,
+                hasVpn   = hasVpn,
+                hasBypass = hasBypass,
             )
             store.clearRevokeReason()
             if (wdttPass.isNotEmpty()) {

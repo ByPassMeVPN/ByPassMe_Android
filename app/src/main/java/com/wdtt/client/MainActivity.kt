@@ -62,6 +62,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.first
+import com.wdtt.client.JamDetector
 import com.wdtt.client.XrayManager
 import com.wdtt.client.BypassServerManager
 import com.wdtt.client.VpnServerManager
@@ -138,11 +139,27 @@ class MainActivity : ComponentActivity() {
                 VpnServerManager.refreshInBackground(appContext, scope)
             }
 
-            // После ввода подписки — загружаем списки серверов
+            // После ввода подписки — загружаем списки серверов + jam-check
             LaunchedEffect(savedUuid) {
-                if (savedUuid.isBlank()) return@LaunchedEffect
+                if (savedUuid.isBlank()) {
+                    JamDetector.stop()
+                    return@LaunchedEffect
+                }
+                JamDetector.start(scope)
                 BypassServerManager.fetchServers(appContext)
                 VpnServerManager.fetchServers(appContext)
+            }
+
+            // При возврате в приложение — сразу перепроверить глушение
+            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner, savedUuid) {
+                val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && savedUuid.isNotBlank()) {
+                        scope.launch { JamDetector.checkNow() }
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
             }
 
             // Опрос каждые 5 секунд — удаление устройства / истечение подписки → стоп VPN + обход + онбординг

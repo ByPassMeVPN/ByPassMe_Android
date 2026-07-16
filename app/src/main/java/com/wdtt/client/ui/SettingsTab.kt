@@ -99,6 +99,7 @@ fun BypassTabContent(
     val subStatus by com.wdtt.client.SubscriptionChecker.status.collectAsStateWithLifecycle()
     val subDaysLeft by com.wdtt.client.SubscriptionChecker.daysLeft.collectAsStateWithLifecycle()
     val savedUuid by settingsStore.vpnUuid.collectAsStateWithLifecycle(initialValue = "")
+    val hasBypassAccess by settingsStore.hasBypassAccess.collectAsStateWithLifecycle(initialValue = true)
     val savedSubscriptionUrl by settingsStore.vpnSubscriptionUrl.collectAsStateWithLifecycle(initialValue = "")
     val bypassServers by BypassServerManager.servers.collectAsStateWithLifecycle()
 
@@ -107,6 +108,20 @@ fun BypassTabContent(
     LaunchedEffect(tunnelRunning) {
         if (wasRunning && !tunnelRunning) TunnelManager.startCooldown(5)
         wasRunning = tunnelRunning
+    }
+
+    if (!hasBypassAccess) {
+        BypassUpgradePrompt(
+            isRefreshing = isRefreshing,
+            onRefresh = {
+                scope.launch {
+                    isRefreshing = true
+                    com.wdtt.client.SubscriptionChecker.refreshSubscription(context)
+                    isRefreshing = false
+                }
+            },
+        )
+        return
     }
 
     var selectedServer by rememberSaveable { mutableIntStateOf(0) }
@@ -356,6 +371,8 @@ fun BypassTabContent(
 
         // ── Статус подписки ─────────────────────────────────────────
         StatusBanner(status = subStatus, daysLeft = subDaysLeft)
+
+        JamWarningBanner(hasBypassAccess = true)
 
         // ── Статус орб ──────────────────────────────────────────────
         ConnectionStatusOrb(running = tunnelRunning, ready = tunnelReady)

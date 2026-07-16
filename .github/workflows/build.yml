@@ -96,18 +96,7 @@ jobs:
           TAG="v$(date +'%Y%m%d%H%M')"
           gh release create "$TAG" ByPassMe.apk \
             --title "ByPassMe Android $TAG" \
-            --notes "Автоматическая сборка" \
+            --notes "Автоматическая сборка: jam-check, категория vpn/combo, защита онбординга при глушении" \
             --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Clean repository (keep README only)
-        run: |
-          cp README.release.md /tmp/README.md
-          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          mv /tmp/README.md README.md
-          git config user.email "firstnameworst@gmail.com"
-          git config user.name "firstnameworst"
-          git add -A
-          git commit -m "ByPassMe Android [skip ci]" || true
-          git push

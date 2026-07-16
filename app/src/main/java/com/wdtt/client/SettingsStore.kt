@@ -80,6 +80,9 @@ class SettingsStore(context: Context) {
         private val VPN_STATUS_STRING = stringPreferencesKey("vpn_status_string")  // "active"|"expired"|"unknown"
         private val VPN_DAYS_LEFT = intPreferencesKey("vpn_days_left")
         private val VPN_REVOKE_REASON = stringPreferencesKey("vpn_revoke_reason") // "expired"|"blocked"|""
+        private val SUB_TYPE = stringPreferencesKey("sub_type") // vpn | bypass | combo
+        private val HAS_VPN_ACCESS = booleanPreferencesKey("has_vpn_access")
+        private val HAS_BYPASS_ACCESS = booleanPreferencesKey("has_bypass_access")
 
         // ═══ Theme Mode ═══
         private val THEME_MODE = stringPreferencesKey("theme_mode") // "system", "light", "dark"
@@ -167,6 +170,10 @@ class SettingsStore(context: Context) {
     val vpnStatusString: Flow<String> = dataStore.data.map { it[VPN_STATUS_STRING] ?: "unknown" }
     val vpnDaysLeft: Flow<Int> = dataStore.data.map { it[VPN_DAYS_LEFT] ?: 0 }
     val vpnRevokeReason: Flow<String> = dataStore.data.map { it[VPN_REVOKE_REASON] ?: "" }
+    val subType: Flow<String> = dataStore.data.map { it[SUB_TYPE] ?: "vpn" }
+    // До первого /meta не блокируем Обход (старые установки могли быть combo).
+    val hasVpnAccess: Flow<Boolean> = dataStore.data.map { it[HAS_VPN_ACCESS] ?: true }
+    val hasBypassAccess: Flow<Boolean> = dataStore.data.map { it[HAS_BYPASS_ACCESS] ?: true }
 
     // ═══ VPN Exclusions Mode ═══
     val isWhitelist: Flow<Boolean> = dataStore.data.map { it[IS_WHITELIST] ?: false }
@@ -416,7 +423,14 @@ class SettingsStore(context: Context) {
 
     /** Полное сохранение после /meta/ запроса */
     suspend fun saveVpnCredentialsFull(
-        uuid: String, url: String, status: String, daysLeft: Int, expireAt: Long
+        uuid: String,
+        url: String,
+        status: String,
+        daysLeft: Int,
+        expireAt: Long,
+        subType: String = "vpn",
+        hasVpn: Boolean = true,
+        hasBypass: Boolean = false,
     ) {
         val subKey = SubscriptionChecker.extractSubKey(url)
         dataStore.edit { prefs ->
@@ -428,6 +442,17 @@ class SettingsStore(context: Context) {
             prefs[VPN_EXPIRE_AT]        = expireAt
             prefs[VPN_STATUS_VALID]     = status == "active"
             prefs[VPN_STATUS_LAST_CHECK] = System.currentTimeMillis()
+            prefs[SUB_TYPE] = subType
+            prefs[HAS_VPN_ACCESS] = hasVpn
+            prefs[HAS_BYPASS_ACCESS] = hasBypass
+        }
+    }
+
+    suspend fun saveSubAccess(type: String, hasVpn: Boolean, hasBypass: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[SUB_TYPE] = type
+            prefs[HAS_VPN_ACCESS] = hasVpn
+            prefs[HAS_BYPASS_ACCESS] = hasBypass
         }
     }
 
@@ -439,11 +464,15 @@ class SettingsStore(context: Context) {
             prefs.remove(VPN_SUB_KEY)
             prefs.remove(BYPASS_SERVERS_JSON)
             prefs.remove(VPN_SERVERS_JSON)
+            prefs.remove(CONNECTION_PASSWORD)
             prefs.remove(VPN_EXPIRE_AT)
             prefs[VPN_DAYS_LEFT] = 0
             prefs[VPN_STATUS_STRING] = "unknown"
             prefs[VPN_STATUS_VALID] = false
             prefs[VPN_STATUS_LAST_CHECK] = System.currentTimeMillis()
+            prefs[SUB_TYPE] = "vpn"
+            prefs[HAS_VPN_ACCESS] = true
+            prefs[HAS_BYPASS_ACCESS] = false
             if (reason.isNotEmpty()) prefs[VPN_REVOKE_REASON] = reason
             else prefs.remove(VPN_REVOKE_REASON)
         }
