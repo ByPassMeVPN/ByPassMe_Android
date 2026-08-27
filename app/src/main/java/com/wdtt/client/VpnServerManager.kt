@@ -20,6 +20,8 @@ data class VpnServerTemplate(
     val network: String,
     val fingerprint: String,
     val outboundTag: String,
+    val sni: String = "",
+    val path: String = "",
 )
 
 /**
@@ -49,6 +51,8 @@ object VpnServerManager {
                     network     = s.optString("network", "grpc"),
                     fingerprint = s.optString("fingerprint", "safari"),
                     outboundTag = s.optString("outboundTag", "proxy"),
+                    sni         = s.optString("sni", "").trim(),
+                    path        = s.optString("path", "").trim(),
                 )
             } catch (_: Exception) {
                 null
@@ -70,7 +74,17 @@ object VpnServerManager {
     suspend fun loadCached(context: Context) = withContext(Dispatchers.IO) {
         if (servers.value.isNotEmpty()) return@withContext
         val cached = SettingsStore(context).vpnServersJson.first()
-        if (cached.isNotBlank()) applyServersJson(cached)
+        if (cached.isNotBlank() && applyServersJson(cached)) return@withContext
+        loadFromAssets(context)
+    }
+
+    private fun loadFromAssets(context: Context): Boolean {
+        return try {
+            val body = context.assets.open("vpn-servers.json").bufferedReader().readText()
+            applyServersJson(body)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private suspend fun fetchFromHub(context: Context): FetchResult {
@@ -112,6 +126,7 @@ object VpnServerManager {
             FetchResult.Success -> result
             else -> {
                 if (servers.value.isEmpty()) loadCached(context)
+                if (servers.value.isEmpty()) loadFromAssets(context)
                 if (servers.value.isNotEmpty()) FetchResult.Success else result
             }
         }

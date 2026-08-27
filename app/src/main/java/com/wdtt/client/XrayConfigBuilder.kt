@@ -18,10 +18,11 @@ object XrayConfigBuilder {
     private const val REALITY_GRPC_SNI = "www.google.com"
     private const val REALITY_FLOW = "xtls-rprx-vision"
     private const val HYSTERIA_AUTH = "f2df79dd-f7d0-4c8b-8c61-7b6fb9852758"
-    private const val HYSTERIA_SNI = "bypassme.online"
     private const val HYSTERIA_ALPN = "h3"
-    private const val HYSTERIA_FINGERPRINT = "firefox"
-    private const val HYSTERIA_PIN_SHA256 = "AAFC87C7E2B134A085B8798841B2D4E5ED7B8B2237D1F4B5C8D3539C3D0D27A2"
+
+    // VLESS+xHTTP+TLS (как в bypassme-api xray_configs.WS3_*)
+    private const val XHTTP_PATH = "/assets/build/_app/immutable/chunks/stream-one/"
+    private const val XHTTP_MODE = "auto"
 
     private val whitelistDomains = arrayOf(
         "vk.com", "vk.ru", "vk.cc", "vk.link", "vk.me",
@@ -159,6 +160,7 @@ object XrayConfigBuilder {
         val proxy = when (server.network.lowercase()) {
             "hysteria" -> hysteriaOutbound(server)
             "tcp"      -> tcpRealityOutbound(server, uuid)
+            "xhttp", "splithttp" -> xhttpOutbound(server, uuid)
             else       -> grpcRealityOutbound(server, uuid)
         }
         return JSONArray().apply {
@@ -168,8 +170,10 @@ object XrayConfigBuilder {
         }
     }
 
-    private fun hysteriaOutbound(server: VpnServerTemplate): JSONObject =
-        JSONObject().apply {
+    private fun hysteriaOutbound(server: VpnServerTemplate): JSONObject {
+        val sni = server.sni.ifBlank { server.address }
+        val fp = server.fingerprint.ifBlank { "chrome" }
+        return JSONObject().apply {
             put("tag", server.outboundTag)
             put("protocol", "hysteria")
             put("settings", JSONObject().apply {
@@ -182,9 +186,8 @@ object XrayConfigBuilder {
                 put("security", "tls")
                 put("tlsSettings", JSONObject().apply {
                     put("alpn", JSONArray().put(HYSTERIA_ALPN))
-                    put("fingerprint", HYSTERIA_FINGERPRINT)
-                    put("serverName", HYSTERIA_SNI)
-                    put("pinnedPeerCertificateChainSha256", JSONArray().put(HYSTERIA_PIN_SHA256))
+                    put("fingerprint", fp)
+                    put("serverName", sni)
                 })
                 put("hysteriaSettings", JSONObject().apply {
                     put("auth", HYSTERIA_AUTH)
@@ -195,7 +198,7 @@ object XrayConfigBuilder {
                 })
             })
         }
-
+    }
     private fun grpcRealityOutbound(server: VpnServerTemplate, uuid: String): JSONObject =
         JSONObject().apply {
             put("tag", server.outboundTag)
@@ -224,8 +227,9 @@ object XrayConfigBuilder {
             })
         }
 
-    private fun tcpRealityOutbound(server: VpnServerTemplate, uuid: String): JSONObject =
-        JSONObject().apply {
+    private fun tcpRealityOutbound(server: VpnServerTemplate, uuid: String): JSONObject {
+        val sni = server.sni.ifBlank { REALITY_SNI }
+        return JSONObject().apply {
             put("tag", server.outboundTag)
             put("protocol", "vless")
             put("settings", JSONObject().put("vnext", JSONArray().put(JSONObject().apply {
@@ -242,12 +246,58 @@ object XrayConfigBuilder {
                 put("tcpSettings", JSONObject())
                 put("security", "reality")
                 put("realitySettings", JSONObject().apply {
-                    put("serverName", REALITY_SNI)
+                    put("serverName", sni)
                     put("publicKey", REALITY_PUBLIC_KEY)
                     put("shortId", REALITY_SHORT_ID)
-                    put("fingerprint", server.fingerprint)
+                    put("fingerprint", server.fingerprint.ifBlank { "firefox" })
                 })
                 put("sockopt", JSONObject().put("tcpKeepAliveInterval", 30))
             })
         }
+    }
+
+    private fun xhttpOutbound(server: VpnServerTemplate, uuid: String): JSONObject {
+        val host = server.address
+        val sni = server.sni.ifBlank { host }
+        val path = server.path.ifBlank { XHTTP_PATH }
+        val fp = server.fingerprint.ifBlank { "qq" }
+        return JSONObject().apply {
+            put("tag", server.outboundTag)
+            put("protocol", "vless")
+            put("settings", JSONObject().put("vnext", JSONArray().put(JSONObject().apply {
+                put("address", host)
+                put("port", server.port)
+                put("users", JSONArray().put(JSONObject().apply {
+                    put("id", uuid)
+                    put("encryption", "none")
+                    put("flow", "")
+                }))
+            })))
+            put("streamSettings", JSONObject().apply {
+                put("network", "xhttp")
+                put("security", "tls")
+                put("tlsSettings", JSONObject().apply {
+                    put("alpn", JSONArray().put("h2").put("http/1.1"))
+                    put("fingerprint", fp)
+                    put("serverName", sni)
+                })
+                put("xhttpSettings", JSONObject().apply {
+                    put("path", path)
+                    put("host", sni)
+                    put("mode", XHTTP_MODE)
+                    put("extra", JSONObject().apply {
+                        put("scMaxEachPostBytes", "393216-786432")
+                        put("xPaddingBytes", "100-500")
+                        put("xmux", JSONObject().apply {
+                            put("cMaxReuseTimes", "200-300")
+                            put("hKeepAlivePeriod", 60)
+                            put("hMaxRequestTimes", "200-300")
+                            put("hMaxReusableSecs", "600-900")
+                            put("maxConnections", 1)
+                        })
+                    })
+                })
+            })
+        }
+    }
 }
