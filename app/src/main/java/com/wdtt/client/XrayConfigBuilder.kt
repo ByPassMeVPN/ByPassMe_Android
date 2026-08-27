@@ -158,7 +158,7 @@ object XrayConfigBuilder {
 
     private fun outbounds(server: VpnServerTemplate, uuid: String): JSONArray {
         val proxy = when (server.network.lowercase()) {
-            "hysteria" -> hysteriaOutbound(server)
+            "hysteria" -> hysteriaOutbound(server, uuid)
             "tcp"      -> tcpRealityOutbound(server, uuid)
             "xhttp", "splithttp" -> xhttpOutbound(server, uuid)
             else       -> grpcRealityOutbound(server, uuid)
@@ -170,7 +170,9 @@ object XrayConfigBuilder {
         }
     }
 
-    private fun hysteriaOutbound(server: VpnServerTemplate): JSONObject {
+    private fun hysteriaOutbound(server: VpnServerTemplate, uuid: String): JSONObject {
+        // Remnawave hy2: auth = VLESS UUID пользователя (не legacy password).
+        val auth = uuid.ifBlank { HYSTERIA_AUTH }
         val sni = server.sni.ifBlank { server.address }
         val fp = server.fingerprint.ifBlank { "chrome" }
         return JSONObject().apply {
@@ -190,8 +192,20 @@ object XrayConfigBuilder {
                     put("serverName", sni)
                 })
                 put("hysteriaSettings", JSONObject().apply {
-                    put("auth", HYSTERIA_AUTH)
+                    put("auth", auth)
                     put("version", 2)
+                })
+                put("finalmask", JSONObject().apply {
+                    put("quicParams", JSONObject().apply {
+                        put("disablePathMTUDiscovery", false)
+                        put("initConnReceiveWindow", 20971520)
+                        put("initStreamReceiveWindow", 8388608)
+                        put("keepAlivePeriod", 10)
+                        put("maxConnReceiveWindow", 20971520)
+                        put("maxIdleTimeout", 30)
+                        put("maxIncomingStreams", 1024)
+                        put("maxStreamReceiveWindow", 8388608)
+                    })
                 })
                 put("sockopt", JSONObject().apply {
                     put("udpDomainStrategy", "UseIP")

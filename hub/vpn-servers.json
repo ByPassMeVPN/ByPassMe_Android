@@ -13,7 +13,7 @@
       "id": "nl1",
       "name": "🇳🇱 Нидерланды #1",
       "address": "seal-nl.bypassme.online",
-      "port": 4433,
+      "port": 443,
       "network": "tcp",
       "fingerprint": "firefox",
       "sni": "seal-nl.bypassme.online",

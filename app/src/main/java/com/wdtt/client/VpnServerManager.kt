@@ -74,7 +74,9 @@ object VpnServerManager {
     suspend fun loadCached(context: Context) = withContext(Dispatchers.IO) {
         if (servers.value.isNotEmpty()) return@withContext
         val cached = SettingsStore(context).vpnServersJson.first()
-        if (cached.isNotBlank() && applyServersJson(cached)) return@withContext
+        // Старый кэш с IP/grpc без xhttp — игнорируем, берём assets.
+        val cacheOk = cached.isNotBlank() && cached.contains(""xhttp"") && applyServersJson(cached)
+        if (cacheOk) return@withContext
         loadFromAssets(context)
     }
 
