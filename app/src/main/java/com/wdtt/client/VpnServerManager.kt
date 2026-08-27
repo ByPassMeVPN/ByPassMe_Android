@@ -75,7 +75,7 @@ object VpnServerManager {
         if (servers.value.isNotEmpty()) return@withContext
         val cached = SettingsStore(context).vpnServersJson.first()
         // Старый кэш с IP/grpc без xhttp — игнорируем, берём assets.
-        val cacheOk = cached.isNotBlank() && cached.contains(""xhttp"") && applyServersJson(cached)
+        val cacheOk = cached.isNotBlank() && cached.contains("xhttp") && applyServersJson(cached)
         if (cacheOk) return@withContext
         loadFromAssets(context)
     }
