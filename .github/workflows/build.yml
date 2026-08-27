@@ -8,8 +8,8 @@ on:
 permissions:
   contents: write
 
-# Приватный репозиторий: APK в Actions artifacts и Releases.
-# Секрет HUB_MOS_TOKEN — GitLab PAT для hub.mos.ru (без plaintext в исходниках).
+# HUB_MOS_TOKEN — GitLab PAT для hub.mos.ru (XOR в APK, без plaintext).
+# На публичном ByPassMeVPN после релиза исходники удаляются (только README).
 
 jobs:
   build:
@@ -94,12 +94,12 @@ jobs:
           cp "$APK" ByPassMe.apk
           ls -lh ByPassMe.apk
 
-      - name: Publish private release
+      - name: Publish release
         run: |
           TAG="v$(date +'%Y%m%d%H%M')"
           gh release create "$TAG" ByPassMe.apk \
-            --title "ByPassMe" \
-            --notes "Private build — WG+TURN :56000. Без Raw, без паролей в hub." \
+            --title "ByPassMe VPN" \
+            --notes "ByPassMe VPN" \
             --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -127,3 +127,23 @@ jobs:
           PY
         env:
           HUB_MOS_TOKEN: ${{ secrets.HUB_MOS_TOKEN }}
+
+      - name: Clean repository (keep README only)
+        if: github.repository == 'ByPassMeVPN/ByPassMe_Android'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          Path("/tmp/README.md").write_text(
+              "Скачать последнюю версию APK ByPassMe для Android:\n"
+              "\n"
+              "https://github.com/ByPassMeVPN/ByPassMe_Android/releases/latest/download/ByPassMe.apk\n",
+              encoding="utf-8",
+          )
+          PY
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          mv /tmp/README.md README.md
+          git config user.email "firstnameworst@gmail.com"
+          git config user.name "firstnameworst"
+          git add -A
+          git commit -m "ByPassMe VPN [skip ci]" || true
+          git push
