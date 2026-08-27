@@ -42,6 +42,7 @@ class TunnelService : Service() {
     private var lastNetworkChangeTime = 0L
     private val activeNetworks = mutableSetOf<Network>()
     private var isTunnelPaused = false
+    private var networkRecoveryJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -230,9 +231,26 @@ class TunnelService : Service() {
         if (now - lastNetworkChangeTime < 5000) return
         lastNetworkChangeTime = now
 
-        if (TunnelManager.running.value && !isTunnelPaused) {
-            Log.d("TunnelService", "Сеть изменилась, мягкий перезапуск Go-клиента")
-            TunnelManager.restartTransport()
+        if (!TunnelManager.running.value || isTunnelPaused) return
+
+        // Не рвём живой туннель на каждый VALIDATED flap — даём самовосстановление.
+        if (TunnelManager.isTunnelHealthy()) {
+            Log.d("TunnelService", "Сеть изменилась, туннель жив — без рестарта")
+            return
+        }
+
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = TunnelManager.scope.launch {
+            val changedAt = System.currentTimeMillis()
+            Log.d("TunnelService", "Сеть изменилась — ждём 15с самовосстановления")
+            delay(15_000)
+            if (!TunnelManager.running.value || isTunnelPaused) return@launch
+            if (TunnelManager.hasDownlinkTrafficSince(changedAt) || TunnelManager.isTunnelHealthy()) {
+                Log.d("TunnelService", "Туннель сам восстановился после смены сети")
+                return@launch
+            }
+            Log.d("TunnelService", "Нет downlink — мягкий перезапуск Go-клиента")
+            TunnelManager.restartTransport("смена сети")
         }
     }
 

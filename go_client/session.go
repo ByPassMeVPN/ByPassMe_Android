@@ -24,7 +24,7 @@ const (
 	readBufSize        = 1600
 	socketBufSize      = 625 * 1024
 	keepaliveByte      = 0xFF // DTLS-level keepalive marker
-	keepaliveInterval  = 15 * time.Second
+	keepaliveInterval  = 10 * time.Second // как в qWDTT 1.4.2
 )
 
 // Handshake semaphore: limit to 3 concurrent DTLS handshakes
@@ -341,6 +341,7 @@ func RunSession(
 	slot := &WorkerSlot{
 		ID:     sessionID,
 		SendCh: make(chan []byte, workerSendBuf),
+		PrioCh: make(chan []byte, prioBuf),
 	}
 	d.Register(slot)
 	defer d.Unregister(slot)
@@ -354,52 +355,81 @@ func RunSession(
 	})
 	defer stopDTLS()
 
-	// DTLS Keepalive: prevents TURN allocation timeout and DTLS idle disconnect
+	// Keepalive через PrioCh (единственный writer) — как в qWDTT 1.4.2.
 	go func() {
 		defer proxyWg.Done()
 		t := time.NewTicker(keepaliveInterval)
 		defer t.Stop()
-		ping := []byte{keepaliveByte}
 		for {
 			select {
 			case <-sessCtx.Done():
 				return
 			case <-t.C:
-				_ = dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if _, err := dtlsConn.Write(ping); err != nil {
-					return
+				pkt := getPktBuf(1)
+				pkt[0] = keepaliveByte
+				select {
+				case slot.PrioCh <- pkt:
+				default:
+					putPktBuf(pkt)
 				}
 			}
 		}
 	}()
 
-	// Writer: dispatcher → DTLS
+	// Writer: PrioCh (ACK/keepalive) всегда раньше SendCh.
 	go func() {
 		defer proxyWg.Done()
 		defer sessCancel()
+		defer func() {
+			for {
+				select {
+				case p := <-slot.PrioCh:
+					putPktBuf(p)
+				default:
+					goto drainSend
+				}
+			}
+		drainSend:
+			for {
+				select {
+				case p := <-slot.SendCh:
+					putPktBuf(p)
+				default:
+					return
+				}
+			}
+		}()
 		for {
+			var pkt []byte
+			var ok bool
 			select {
-			case <-sessCtx.Done():
+			case pkt, ok = <-slot.PrioCh:
+			default:
+				select {
+				case <-sessCtx.Done():
+					return
+				case pkt, ok = <-slot.PrioCh:
+				case pkt, ok = <-slot.SendCh:
+				}
+			}
+			if !ok {
 				return
-			case pkt, ok := <-slot.SendCh:
-				if !ok {
-					return
-				}
-				_ = dtlsConn.SetWriteDeadline(time.Now().Add(sessionReadTimeout))
-				if atomic.CompareAndSwapUint32(&firstDtlsWrite, 0, 1) {
-					log.Printf("[ВОРКЕР #%d] [ДЕБАГ] Отправлен ПЕРВЫЙ пакет в DTLS-соединение (%d байт)", sessionID, len(pkt))
-				}
-				_, writeErr := dtlsConn.Write(pkt)
-				putPktBuf(pkt)
-				if writeErr != nil {
-					log.Printf("[ВОРКЕР #%d] Ошибка Writer: %v", sessionID, writeErr)
-					return
-				}
+			}
+			// 3с, не sessionReadTimeout: зависшая запись не должна держать writer полчаса.
+			_ = dtlsConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+			if atomic.CompareAndSwapUint32(&firstDtlsWrite, 0, 1) {
+				log.Printf("[ВОРКЕР #%d] [ДЕБАГ] Отправлен ПЕРВЫЙ пакет в DTLS-соединение (%d байт)", sessionID, len(pkt))
+			}
+			_, writeErr := dtlsConn.Write(pkt)
+			putPktBuf(pkt)
+			if writeErr != nil {
+				log.Printf("[ВОРКЕР #%d] Ошибка Writer: %v", sessionID, writeErr)
+				return
 			}
 		}
 	}()
 
-	// Reader: DTLS → dispatcher
+	// Reader: DTLS → dispatcher (неблокирующий ReturnCh — не стопорим TURN reader)
 	go func() {
 		defer proxyWg.Done()
 		defer sessCancel()
@@ -431,6 +461,9 @@ func RunSession(
 			copy(pkt, b[:n])
 			select {
 			case d.ReturnCh <- pkt:
+			default:
+				// Очередь к WG переполнена — дропаем, не блокируем TURN reader.
+				putPktBuf(pkt)
 			case <-sessCtx.Done():
 				putPktBuf(pkt)
 				return

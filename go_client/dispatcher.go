@@ -31,29 +31,39 @@ func putPktBuf(b []byte) {
 }
 
 const (
-	returnChBuf = 384
+	// returnChBuf — глубина канала пакетов, готовых к записи в локальный WG.
+	// Как в qWDTT 1.4.2: запас под BDP ~70–80 Мбит/с × 50–60 мс RTT.
+	returnChBuf = 512
+	prioBuf     = 32
 
-	// chunkSize — количество последовательных пакетов, отправляемых в один worker
-	// перед переключением на следующий.
-	//
-	// Зачем: при round-robin (chunk=1) каждый пакет летит через разный TURN relay
-	// с разным latency, что приводит к reorder на сервере. TCP внутри WireGuard
-	// интерпретирует reorder как потери → cwnd collapse → скорость single-flow
-	// падает до ~8 KB/s.
-	//
-	// С chunk=8: пакеты в пределах одного TCP congestion window (~10 пакетов при
-	// initial cwnd) уходят через один TURN relay → прилетают по порядку.
-	// Reorder возможен только между chunk-границами, что покрывается WG replay
-	// window (2048 пакетов).
-	//
-	// Агрегатная пропускная способность не меняется — все workers загружены
-	// равномерно по-прежнему (каждый получает 1/N от общего трафика за время).
-	chunkSize = 8
+	// maxDwellMS — максимум мс подряд через один worker, даже если chunk не закончен.
+	maxDwellMS = 15
+
+	// prioThreshold — мелкие пакеты (TCP ACK и т.п.) идут в PrioCh, минуя data-очередь.
+	prioThreshold = 128
 )
+
+// chunkSizeFor — адаптивный размер chunk по размеру пакета (qWDTT 1.4.2).
+// Крупные данные группируем; мелкие быстро переключаем / уводим в PrioCh.
+func chunkSizeFor(pktSize int) int {
+	switch {
+	case pktSize > 1100:
+		return 64
+	case pktSize >= 701:
+		return 24
+	case pktSize >= 301:
+		return 8
+	case pktSize >= 101:
+		return 3
+	default:
+		return 1
+	}
+}
 
 type WorkerSlot struct {
 	ID     int
 	SendCh chan []byte
+	PrioCh chan []byte
 }
 
 type Dispatcher struct {
@@ -62,7 +72,9 @@ type Dispatcher struct {
 	mu           sync.Mutex
 	workers      []*WorkerSlot
 	rrIndex      int
-	rrCount      int // сколько пакетов отправлено в текущий worker (0..chunkSize-1)
+	rrCount      int   // пакетов в текущем chunk
+	lastPktTime  int64 // unix millis последнего пакета
+	chunkStartTs int64 // unix millis начала текущего chunk
 	ReturnCh     chan []byte
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -110,7 +122,6 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 		}
 	}
 	remaining := len(d.workers)
-	// Подстраховка: если текущий rrIndex вылез за границу после удаления
 	if d.rrIndex >= remaining && remaining > 0 {
 		d.rrIndex = d.rrIndex % remaining
 	}
@@ -119,14 +130,7 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 	log.Printf("[ДИСП] Воркер #%d отключён (осталось: %d)", slot.ID, remaining)
 }
 
-// readLoop читает WireGuard-пакеты и распределяет по workers chunk'ами.
-//
-// Логика: отправляем chunkSize подряд пакетов в один worker, потом переходим
-// к следующему. Если текущий worker перегружен (канал полный) — немедленно
-// ищем свободный worker и начинаем новый chunk на нём. Это гарантирует:
-//   - В рамках chunk пакеты идут через один TURN relay → in-order delivery
-//   - Между chunks — разные relay → максимальная агрегатная скорость
-//   - Нет блокировки, нет буферизации, нет дополнительного latency
+// readLoop читает WireGuard-пакеты и распределяет по workers адаптивными chunk'ами.
 func (d *Dispatcher) readLoop() {
 	defer d.wg.Done()
 
@@ -154,6 +158,7 @@ func (d *Dispatcher) readLoop() {
 
 		pkt := getPktBuf(n)
 		copy(pkt, buf[:n])
+		pktSize := n
 
 		d.mu.Lock()
 		nw := len(d.workers)
@@ -163,28 +168,75 @@ func (d *Dispatcher) readLoop() {
 			continue
 		}
 
+		now := time.Now().UnixMilli()
+		lastTime := d.lastPktTime
+		d.lastPktTime = now
+		if lastTime > 0 && now-lastTime > 10 {
+			// Пауза >10мс — предыдущий chunk уже не даёт affinity.
+			d.rrIndex = (d.rrIndex + 1) % nw
+			d.rrCount = 0
+			d.chunkStartTs = now
+		}
+
+		// Мелкие пакеты (ACK) — PrioCh с fallback на любой worker.
+		if pktSize <= prioThreshold {
+			idx := d.rrIndex % nw
+			sentPrio := false
+			select {
+			case d.workers[idx].PrioCh <- pkt:
+				sentPrio = true
+			default:
+				for i := 1; i < nw; i++ {
+					alt := (idx + i) % nw
+					select {
+					case d.workers[alt].PrioCh <- pkt:
+						sentPrio = true
+					default:
+					}
+					if sentPrio {
+						break
+					}
+				}
+			}
+			if sentPrio {
+				d.mu.Unlock()
+				continue
+			}
+			// Все PrioCh заняты — падаем в обычную очередь.
+		}
+
+		chunk := chunkSizeFor(pktSize)
+
+		if d.chunkStartTs == 0 {
+			d.chunkStartTs = now
+		} else if now-d.chunkStartTs >= maxDwellMS {
+			d.rrIndex = (d.rrIndex + 1) % nw
+			d.rrCount = 0
+			d.chunkStartTs = now
+		}
+
 		sent := false
 		idx := d.rrIndex % nw
 
-		// Пробуем текущий worker (chunk affinity)
 		w := d.workers[idx]
 		select {
 		case w.SendCh <- pkt:
 			sent = true
 			d.rrCount++
-			if d.rrCount >= chunkSize {
+			if d.rrCount >= chunk {
 				d.rrIndex = (idx + 1) % nw
 				d.rrCount = 0
+				d.chunkStartTs = now
 			}
 		default:
-			// Текущий worker перегружен — ищем свободный, начинаем новый chunk
 			for i := 1; i < nw; i++ {
 				altIdx := (idx + i) % nw
 				select {
 				case d.workers[altIdx].SendCh <- pkt:
 					sent = true
 					d.rrIndex = altIdx
-					d.rrCount = 1 // первый пакет нового chunk'а уже отправлен
+					d.rrCount = 1
+					d.chunkStartTs = now
 				default:
 				}
 				if sent {
@@ -194,7 +246,6 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if !sent {
-			// Все workers перегружены — сдвигаем указатель, пакет дропается
 			d.rrIndex = (idx + 1) % nw
 			d.rrCount = 0
 			putPktBuf(pkt)

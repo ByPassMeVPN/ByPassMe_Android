@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+# Приватный репозиторий: APK в Actions artifacts и Releases.
+# Секрет HUB_MOS_TOKEN — GitLab PAT для hub.mos.ru (без plaintext в исходниках).
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -91,19 +94,18 @@ jobs:
           cp "$APK" ByPassMe.apk
           ls -lh ByPassMe.apk
 
-      - name: Publish release
+      - name: Publish private release
         run: |
           TAG="v$(date +'%Y%m%d%H%M')"
           gh release create "$TAG" ByPassMe.apk \
-            --title "ByPassMe VPN" \
-            --notes "ByPassMe VPN" \
+            --title "ByPassMe" \
+            --notes "Private build — WG+TURN :56000. Без Raw, без паролей в hub." \
             --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify no plaintext hub token in APK
         run: |
-          # Token from CI secret must not appear as plaintext in the APK
           python3 - <<'PY'
           import os, zipfile, pathlib, sys
           token = os.environ.get("HUB_MOS_TOKEN", "").strip()
@@ -125,14 +127,3 @@ jobs:
           PY
         env:
           HUB_MOS_TOKEN: ${{ secrets.HUB_MOS_TOKEN }}
-
-      - name: Clean repository (keep README only)
-        run: |
-          cp README.release.md /tmp/README.md
-          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          mv /tmp/README.md README.md
-          git config user.email "firstnameworst@gmail.com"
-          git config user.name "firstnameworst"
-          git add -A
-          git commit -m "ByPassMe VPN [skip ci]" || true
-          git push

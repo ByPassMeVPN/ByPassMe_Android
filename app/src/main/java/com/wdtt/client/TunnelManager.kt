@@ -58,8 +58,32 @@ object TunnelManager {
     val cooldownSeconds = MutableStateFlow(0)
     private var cooldownJob: Job? = null
 
+    // Здоровье туннеля (как в qWDTT 1.4.2, без thrash)
+    private const val STALE_STATS_MS = 90_000L
+    private const val HEALTH_CHECK_GRACE_MS = 120_000L
+    private const val STALL_DOWNLINK_MS = 90_000L
+    private const val MIN_RESTART_INTERVAL_MS = 15_000L
+    @Volatile private var lastStatsReceivedAtMs = 0L
+    @Volatile private var lastUplinkBytes = -1.0
+    @Volatile private var lastDownlinkBytes = -1.0
+    @Volatile private var lastUplinkChangedAtMs = 0L
+    @Volatile private var lastDownlinkChangedAtMs = 0L
+    @Volatile private var processStartedAtMs = 0L
+    @Volatile private var lastTransportRestartAtMs = 0L
+    @Volatile private var transportRestartInProgress = false
+
     // Флаг: капча сейчас решается (авто или вручную) — блокирует circuit breaker
     @Volatile private var isCaptchaSolving = false
+
+    fun isTunnelHealthy(maxStatsAgeMs: Long = 25_000L): Boolean {
+        val now = System.currentTimeMillis()
+        return running.value &&
+            activeWorkers.value > 0 &&
+            lastStatsReceivedAtMs > 0L &&
+            now - lastStatsReceivedAtMs <= maxStatsAgeMs
+    }
+
+    fun hasDownlinkTrafficSince(sinceMs: Long): Boolean = lastDownlinkChangedAtMs >= sinceMs
 
     fun clearUnreadErrors() {
         unreadErrorCount.value = 0
@@ -259,6 +283,13 @@ object TunnelManager {
 
                 process = pb.start()
                 running.value = true
+                processStartedAtMs = System.currentTimeMillis()
+                lastStatsReceivedAtMs = 0L
+                lastUplinkBytes = -1.0
+                lastDownlinkBytes = -1.0
+                lastUplinkChangedAtMs = 0L
+                lastDownlinkChangedAtMs = 0L
+                transportRestartInProgress = false
                 startLogReader()
                 startWatchdog(appContext, params)
 
@@ -383,6 +414,21 @@ object TunnelManager {
                         val match = Regex("Активных:\\s*(\\d+)").find(msg)
                         if (match != null) {
                             activeWorkers.value = match.groupValues[1].toIntOrNull() ?: 0
+                        }
+
+                        val nowStats = System.currentTimeMillis()
+                        lastStatsReceivedAtMs = nowStats
+                        val upMatch = Regex("↑\\s*([0-9]+(?:\\.[0-9]+)?)").find(msg)
+                        val downMatch = Regex("↓\\s*([0-9]+(?:\\.[0-9]+)?)").find(msg)
+                        val upMb = upMatch?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+                        val downMb = downMatch?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+                        if (upMb != null && upMb != lastUplinkBytes) {
+                            lastUplinkBytes = upMb
+                            lastUplinkChangedAtMs = nowStats
+                        }
+                        if (downMb != null && downMb != lastDownlinkBytes) {
+                            lastDownlinkBytes = downMb
+                            lastDownlinkChangedAtMs = nowStats
                         }
 
                         updateLog("stats", "[СТАТИСТИКА] $msg", 3, false)
@@ -527,8 +573,7 @@ object TunnelManager {
     }
 
     // ==================== WATCHDOG ====================
-    // Проверяет, жив ли Go-процесс. Если умер — перезапускает.
-    // Если процесс жив, но 0 воркеров уже 30 сек — тоже перезапуск (зомби).
+    // Процесс жив? Зомби 0 воркеров? Stale stats / stall ↑без↓ — мягкий restartTransport.
     private fun startWatchdog(context: Context, params: TunnelParams) {
         watchdogJob?.cancel()
         watchdogJob = scope.launch {
@@ -537,7 +582,6 @@ object TunnelManager {
             while (isActive && running.value) {
                 val proc = process
                 if (proc == null || !proc.isAlive) {
-                    // Go-процесс мёртв!
                     updateLog("watchdog", "⚠ Процесс упал. Перезапуск...", 50, true)
                     activeWorkers.value = 0
                     forceRegenerateUA = true
@@ -546,15 +590,15 @@ object TunnelManager {
                     if (running.value) {
                         start(context, params, isSwitching = true)
                     }
-                    return@launch // startWatchdog будет перезапущен из start()
+                    return@launch
                 }
 
-                // Детекция зомби: процесс жив, но 0 воркеров
                 val workers = activeWorkers.value
+                val now = System.currentTimeMillis()
                 if (workers <= 0) {
                     if (zeroWorkersSince == 0L) {
-                        zeroWorkersSince = System.currentTimeMillis()
-                    } else if (System.currentTimeMillis() - zeroWorkersSince > 90_000 && !ManlCaptchaWebViewManager.isCaptchaPending && !isCaptchaSolving) {
+                        zeroWorkersSince = now
+                    } else if (now - zeroWorkersSince > 90_000 && !ManlCaptchaWebViewManager.isCaptchaPending && !isCaptchaSolving) {
                         updateLog("watchdog", "⚠ Зомби-процесс (0 воркеров 90с). Перезапуск...", 50, true)
                         forceRegenerateUA = true
                         killProcess()
@@ -566,6 +610,47 @@ object TunnelManager {
                     }
                 } else {
                     zeroWorkersSince = 0L
+
+                    // Нет статистики 90с после grace 120с — мягкий рестарт транспорта
+                    if (
+                        !transportRestartInProgress &&
+                        processStartedAtMs > 0L &&
+                        now - processStartedAtMs > HEALTH_CHECK_GRACE_MS &&
+                        lastStatsReceivedAtMs > 0L &&
+                        now - lastStatsReceivedAtMs > STALE_STATS_MS &&
+                        !ManlCaptchaWebViewManager.isCaptchaPending &&
+                        !isCaptchaSolving
+                    ) {
+                        updateLog(
+                            "health_stale",
+                            "⚠ Нет статистики от воркеров ${STALE_STATS_MS / 1000}с — мягкий перезапуск",
+                            50,
+                            true
+                        )
+                        restartTransport("stale stats")
+                        return@launch
+                    }
+
+                    // ↑есть, ↓нет долго — half-dead TURN ( thrash-safe пороги )
+                    if (
+                        !transportRestartInProgress &&
+                        processStartedAtMs > 0L &&
+                        now - processStartedAtMs > HEALTH_CHECK_GRACE_MS &&
+                        lastUplinkChangedAtMs > 0L &&
+                        now - lastUplinkChangedAtMs < 20_000L &&
+                        (lastDownlinkChangedAtMs == 0L || now - lastDownlinkChangedAtMs > STALL_DOWNLINK_MS) &&
+                        !ManlCaptchaWebViewManager.isCaptchaPending &&
+                        !isCaptchaSolving
+                    ) {
+                        updateLog(
+                            "health_stall",
+                            "⚠ Трафик завис (↑есть ↓нет ${STALL_DOWNLINK_MS / 1000}с) — мягкий перезапуск",
+                            50,
+                            true
+                        )
+                        restartTransport("stall downlink")
+                        return@launch
+                    }
                 }
 
                 delay(5_000)
@@ -573,14 +658,33 @@ object TunnelManager {
         }
     }
 
-    fun restartTransport() {
+    fun restartTransport(reason: String = "смена сети") {
         val params = currentParams ?: return
         val context = lastContext ?: return
-        updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта из-за смены сети...", 50, toAppLog = true)
-        killProcess() // Только убиваем процесс, running не трогаем!
+        val now = System.currentTimeMillis()
+        if (transportRestartInProgress) return
+        if (now - lastTransportRestartAtMs < MIN_RESTART_INTERVAL_MS) {
+            updateLog("network_restart", "[СЕТЬ] Пропуск рестарта ($reason): слишком часто", 50, toAppLog = true)
+            return
+        }
+        // Не рвём живой туннель по «смене сети», если статистика свежая
+        if (reason.contains("сеть", ignoreCase = true) && isTunnelHealthy()) {
+            updateLog("network_restart", "[СЕТЬ] Туннель жив — без рестарта ($reason)", 50, toAppLog = true)
+            return
+        }
+        transportRestartInProgress = true
+        lastTransportRestartAtMs = now
+        updateLog("network_restart", "[СЕТЬ] Мягкий перезапуск транспорта ($reason)...", 50, toAppLog = true)
+        killProcess() // Только процесс; WireGuard/VPN не трогаем
         scope.launch {
-            delay(1500)
-            start(context, params, isSwitching = true)
+            try {
+                delay(1500)
+                if (running.value) {
+                    start(context, params, isSwitching = true)
+                }
+            } finally {
+                transportRestartInProgress = false
+            }
         }
     }
 
