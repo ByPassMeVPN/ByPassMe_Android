@@ -1,0 +1,176 @@
+name: ByPassMe VPN
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# HUB_MOS_TOKEN — GitLab PAT для hub.mos.ru (XOR в APK, без plaintext).
+# На публичном ByPassMeVPN после релиза исходники удаляются (только README).
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.head_commit.message != '' && !contains(github.event.head_commit.message, '[skip ci]')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # пакета «tools» в новых SDK нет — по умолчанию шаг падал
+          packages: 'platform-tools'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build libclient.so
+        run: |
+          export ANDROID_NDK_HOME="$(ls -d "$ANDROID_HOME/ndk"/* | sort -V | tail -n1)"
+          chmod +x scripts/build-go-lib.sh
+          ./scripts/build-go-lib.sh arm64-v8a
+          ls -lh app/src/main/jniLibs/arm64-v8a/
+
+      # Постоянный ключ подписи из секретов. Раньше ключ генерировался заново
+      # на каждой сборке: обновление не ставилось поверх, приходилось удалять
+      # приложение, ANDROID_ID менялся — и в боте появлялось «новое» устройство.
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "ANDROID_KEYSTORE_BASE64 secret is not set"
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > ${{ github.workspace }}/bypassme-release.jks
+
+      - name: Write local.properties
+        run: |
+          if [ -z "${{ secrets.HUB_MOS_TOKEN }}" ]; then
+            echo "HUB_MOS_TOKEN secret is not set"
+            exit 1
+          fi
+          echo "KEYSTORE_FILE=${{ github.workspace }}/bypassme-release.jks" >> local.properties
+          if [ -z "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" ]; then
+            echo "ANDROID_KEYSTORE_PASSWORD secret is not set"
+            exit 1
+          fi
+          echo "KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> local.properties
+          echo "KEY_ALIAS=bypassme" >> local.properties
+          echo "KEY_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> local.properties
+          echo "REPO_ACCESS_TOKEN=${{ secrets.HUB_MOS_TOKEN }}" >> local.properties
+          echo "HUB_MOS_TOKEN=${{ secrets.HUB_MOS_TOKEN }}" >> local.properties
+
+      - name: Download libv2ray (AndroidLibXrayLite)
+        run: |
+          mkdir -p app/libs
+          curl -sL -o app/libs/libv2ray.aar \
+            "https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.6.22/libv2ray.aar"
+          ls -lh app/libs/
+
+      # geosite.dat для маршрутизации VPN (geosite:category-ru, youtube, tiktok, …)
+      - name: Download geosite.dat (v2fly dlc)
+        run: |
+          curl -fsSL --retry 3 -o app/src/main/assets/geosite.dat \
+            "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+          ls -lh app/src/main/assets/geosite.dat
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Upload APK artifact
+        # квота артефактов аккаунта может быть исчерпана — APK всё равно уходит в Releases
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ByPassMe-release
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      - name: Rename APK
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          cp "$APK" ByPassMe.apk
+          ls -lh ByPassMe.apk
+
+      # Чужой ключ = обновление не встанет поверх и новый ANDROID_ID (дубль устройства).
+      - name: Verify signing certificate
+        run: |
+          EXPECTED=98267f7a0a12eae880ae851a577a01399b8ccde02e09662a1f45b3ee3b735312
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
+          [ -x "$APKSIGNER" ] || { echo "apksigner not found"; exit 1; }
+          GOT=$("$APKSIGNER" verify --print-certs ByPassMe.apk | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+          echo "signer SHA-256: $GOT"
+          [ "$GOT" = "$EXPECTED" ] || { echo "FAIL: APK signed with unexpected key"; exit 1; }
+
+      - name: Publish release
+        run: |
+          TAG="v$(date +'%Y%m%d%H%M')"
+          gh release create "$TAG" ByPassMe.apk \
+            --title "ByPassMe VPN" \
+            --notes "ByPassMe VPN" \
+            --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify no plaintext hub token in APK
+        run: |
+          python3 - <<'PY'
+          import os, zipfile, pathlib, sys
+          token = os.environ.get("HUB_MOS_TOKEN", "").strip()
+          if not token:
+              print("skip: empty token env")
+              sys.exit(0)
+          apk = pathlib.Path("ByPassMe.apk")
+          data = apk.read_bytes()
+          if token.encode() in data:
+              print("FAIL: plaintext hub token found in APK")
+              sys.exit(1)
+          with zipfile.ZipFile(apk) as z:
+              for name in z.namelist():
+                  raw = z.read(name)
+                  if token.encode() in raw:
+                      print(f"FAIL: plaintext hub token in {name}")
+                      sys.exit(1)
+          print("OK: no plaintext hub token in APK")
+          PY
+        env:
+          HUB_MOS_TOKEN: ${{ secrets.HUB_MOS_TOKEN }}
+
+      - name: Clean repository (keep README only)
+        if: github.repository == 'ByPassMeVPN/ByPassMe_Android'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          Path("/tmp/README.md").write_text(
+              "Скачать последнюю версию ByPassMe для Android:\n"
+              "\n"
+              "https://github.com/ByPassMeVPN/ByPassMe_Android/releases/latest/download/ByPassMe.apk\n",
+              encoding="utf-8",
+          )
+          PY
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          mv /tmp/README.md README.md
+          git config user.email "firstnameworst@gmail.com"
+          git config user.name "firstnameworst"
+          git add -A
+          git commit -m "ByPassMe VPN [skip ci]" || true
+          git push
