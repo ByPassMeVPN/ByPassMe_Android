@@ -1,0 +1,199 @@
+{
+  "servers": [
+    {
+      "id": "nl",
+      "name": "🇳🇱 Нидерланды",
+      "address": "x-y4fqq-http-nl1.bypassme.online",
+      "port": 443,
+      "network": "xhttp",
+      "fingerprint": "qq",
+      "outboundTag": "proxy"
+    },
+    {
+      "id": "nl1",
+      "name": "🇳🇱 Нидерланды #1",
+      "address": "seal-nl1.bypassme.online",
+      "port": 443,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "sni": "seal-nl1.bypassme.online",
+      "outboundTag": "proxy"
+    },
+    {
+      "id": "nl2",
+      "name": "🇳🇱 Нидерланды #2",
+      "address": "hy-nl1.bypassme.online",
+      "port": 443,
+      "network": "hysteria",
+      "fingerprint": "chrome",
+      "outboundTag": "proxy"
+    },
+    {
+      "id": "de",
+      "name": "🇩🇪 Германия",
+      "address": "x-y4fqq-http-de1.bypassme.online",
+      "port": 443,
+      "network": "xhttp",
+      "fingerprint": "qq",
+      "outboundTag": "proxy-de"
+    },
+    {
+      "id": "de1",
+      "name": "🇩🇪 Германия #1",
+      "address": "seal-de1.bypassme.online",
+      "port": 443,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "sni": "seal-de1.bypassme.online",
+      "outboundTag": "proxy-de"
+    },
+    {
+      "id": "de2",
+      "name": "🇩🇪 Германия #2",
+      "address": "hy-de1.bypassme.online",
+      "port": 443,
+      "network": "hysteria",
+      "fingerprint": "chrome",
+      "outboundTag": "proxy-de"
+    },
+    {
+      "id": "fi",
+      "name": "🇫🇮 Финляндия",
+      "address": "x-y4fqq-http-fl.bypassme.online",
+      "port": 443,
+      "network": "xhttp",
+      "fingerprint": "qq",
+      "outboundTag": "proxy-fi"
+    },
+    {
+      "id": "fi1",
+      "name": "🇫🇮 Финляндия #1",
+      "address": "seal-fl.bypassme.online",
+      "port": 443,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "sni": "seal-fl.bypassme.online",
+      "outboundTag": "proxy-fi"
+    },
+    {
+      "id": "fi2",
+      "name": "🇫🇮 Финляндия #2",
+      "address": "hy-fi.bypassme.online",
+      "port": 443,
+      "network": "hysteria",
+      "fingerprint": "chrome",
+      "outboundTag": "proxy-fi"
+    },
+    {
+      "id": "se",
+      "name": "🇸🇪 Швеция",
+      "address": "x-y4fqq-http-se.bypassme.online",
+      "port": 443,
+      "network": "xhttp",
+      "fingerprint": "qq",
+      "outboundTag": "proxy-se"
+    },
+    {
+      "id": "se1",
+      "name": "🇸🇪 Швеция #1",
+      "address": "seal-se.bypassme.online",
+      "port": 443,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "sni": "seal-se.bypassme.online",
+      "outboundTag": "proxy-se"
+    },
+    {
+      "id": "se2",
+      "name": "🇸🇪 Швеция #2",
+      "address": "hy-se.bypassme.online",
+      "port": 443,
+      "network": "hysteria",
+      "fingerprint": "chrome",
+      "outboundTag": "proxy-se"
+    },
+    {
+      "id": "ro",
+      "name": "🇷🇴 Румыния",
+      "address": "x-y4fqq-http-de.bypassme.online",
+      "port": 443,
+      "network": "xhttp",
+      "fingerprint": "qq",
+      "outboundTag": "proxy-ro"
+    },
+    {
+      "id": "ro1",
+      "name": "🇷🇴 Румыния #1",
+      "address": "seal-de.bypassme.online",
+      "port": 443,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "sni": "seal-de.bypassme.online",
+      "outboundTag": "proxy-ro"
+    },
+    {
+      "id": "ro2",
+      "name": "🇷🇴 Румыния #2",
+      "address": "hy-ro.bypassme.online",
+      "port": 443,
+      "network": "hysteria",
+      "fingerprint": "chrome",
+      "outboundTag": "proxy-ro"
+    },
+    {
+      "id": "gb",
+      "name": "🇬🇧 Лондон",
+      "address": "89.34.219.129",
+      "port": 443,
+      "network": "xhttp",
+      "fingerprint": "qq",
+      "outboundTag": "proxy-gb"
+    },
+    {
+      "id": "gb1",
+      "name": "🇬🇧 Лондон #1",
+      "address": "89.34.219.129",
+      "port": 443,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "outboundTag": "proxy-gb"
+    },
+    {
+      "id": "gb2",
+      "name": "🇬🇧 Лондон #2",
+      "address": "hy-gb.bypassme.online",
+      "port": 443,
+      "network": "hysteria",
+      "fingerprint": "chrome",
+      "outboundTag": "proxy-gb"
+    },
+    {
+      "id": "ny",
+      "name": "🇺🇸 Нью-Йорк",
+      "address": "x-y4fqq-http-usnewyork.bypassme.online",
+      "port": 443,
+      "network": "xhttp",
+      "fingerprint": "qq",
+      "outboundTag": "proxy-usny"
+    },
+    {
+      "id": "ny1",
+      "name": "🇺🇸 Нью-Йорк #1",
+      "address": "seal-usnewyork.bypassme.online",
+      "port": 443,
+      "network": "tcp",
+      "fingerprint": "firefox",
+      "sni": "seal-usnewyork.bypassme.online",
+      "outboundTag": "proxy-usny"
+    },
+    {
+      "id": "ny2",
+      "name": "🇺🇸 Нью-Йорк #2",
+      "address": "hy-usnewyork.bypassme.online",
+      "port": 443,
+      "network": "hysteria",
+      "fingerprint": "chrome",
+      "outboundTag": "proxy-usny"
+    }
+  ]
+}
